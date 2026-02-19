@@ -7,12 +7,20 @@ import com.google.gson.annotations.SerializedName
 data class DeepSeekRequest(
     val model: String = "deepseek-chat",
     val messages: List<ChatMessage>,
-    val stream: Boolean = false
+    val stream: Boolean = false,
+    val temperature: Double? = null,
+    @SerializedName("max_tokens") val maxTokens: Int? = null,
+    val stop: List<String>? = null,
+    @SerializedName("response_format") val responseFormat: ResponseFormat? = null
 )
 
 data class ChatMessage(
     val role: String,
     val content: String
+)
+
+data class ResponseFormat(
+    val type: String // "text" | "json_object"
 )
 
 // --- Response ---

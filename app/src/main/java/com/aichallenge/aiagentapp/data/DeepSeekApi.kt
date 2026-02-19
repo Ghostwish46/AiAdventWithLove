@@ -26,6 +26,7 @@ fun createDeepSeekApi(): DeepSeekApi {
     }
     val logging = HttpLoggingInterceptor().apply {
         level = HttpLoggingInterceptor.Level.BODY
+        redactHeader("Authorization")
     }
     val client = OkHttpClient.Builder()
         .addInterceptor(authInterceptor)
