@@ -8,15 +8,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import com.aichallenge.aiagentapp.data.createDeepSeekApi
+import com.aichallenge.aiagentapp.data.createRouterAiApi
 import com.aichallenge.aiagentapp.data.DeepSeekRepository
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val api = createDeepSeekApi()
-        val repository = DeepSeekRepository(api)
+        val routerAiApi = createRouterAiApi()
+        val repository = DeepSeekRepository(routerAiApi)
         val viewModel = ChatViewModel(repository)
         setContent {
             MaterialTheme {

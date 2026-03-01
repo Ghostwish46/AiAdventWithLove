@@ -15,17 +15,21 @@ android {
         versionName = "1.0"
 
         val localFile = rootProject.file("local.properties")
-        val apiKey = if (localFile.exists()) {
-            localFile.readLines(Charsets.UTF_8)
-                .mapNotNull { line ->
-                    val trimmed = line.trim()
-                    if (trimmed.startsWith("DEEPSEEK_API_KEY=")) {
-                        trimmed.substring(trimmed.indexOf('=') + 1).trim().takeIf { it.isNotEmpty() }
-                    } else null
-                }.firstOrNull() ?: "test-key-replace-me"
-        } else "test-key-replace-me"
-        val escaped = apiKey.replace("\\", "\\\\").replace("\"", "\\\"")
-        buildConfigField("String", "DEEPSEEK_API_KEY", "\"$escaped\"")
+        val localLines = if (localFile.exists()) localFile.readLines(Charsets.UTF_8) else emptyList()
+
+        fun readKey(prefix: String, fallback: String = "test-key-replace-me"): String {
+            val raw = localLines.mapNotNull { line ->
+                val trimmed = line.trim()
+                if (trimmed.startsWith("$prefix=")) {
+                    trimmed.substring(trimmed.indexOf('=') + 1).trim().takeIf { it.isNotEmpty() }
+                } else null
+            }.firstOrNull() ?: fallback
+            return raw.replace("\\", "\\\\").replace("\"", "\\\"")
+        }
+
+        buildConfigField("String", "DEEPSEEK_API_KEY", "\"${readKey("DEEPSEEK_API_KEY")}\"")
+        buildConfigField("String", "ROUTERAI_API_KEY", "\"${readKey("ROUTERAI_API_KEY")}\"")
+
     }
 
     buildFeatures {

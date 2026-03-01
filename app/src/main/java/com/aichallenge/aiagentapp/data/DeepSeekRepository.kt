@@ -15,41 +15,39 @@ data class ErrorDetail(
     @SerializedName("type") val type: String? = null
 )
 
-class DeepSeekRepository(private val api: DeepSeekApi) {
+class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
 
-    suspend fun sendWithTemperature(
+    suspend fun sendWithModel(
         userMessage: String,
-        temperature: Double
-    ): Result<String> = withContext(Dispatchers.IO) {
+        modelId: String
+    ): Result<ModelResponse> = withContext(Dispatchers.IO) {
         if (userMessage.isBlank()) return@withContext Result.failure(IllegalArgumentException("Empty message"))
 
         val request = DeepSeekRequest(
-            model = "deepseek-chat",
+            model = modelId,
             messages = listOf(ChatMessage(role = "user", content = userMessage.trim())),
-            stream = false,
-            temperature = temperature
+            stream = false
         )
 
-        executeRequest(request)
-    }
+        val startMs = System.currentTimeMillis()
+        try {
+            val response = routerAiApi.createChatCompletion(request)
+            val elapsedMs = System.currentTimeMillis() - startMs
 
-    private suspend fun executeRequest(request: DeepSeekRequest): Result<String> {
-        return try {
-            val response = api.createChatCompletion(request)
             if (response.isSuccessful) {
                 val body = response.body()
                 val content = body?.choices?.firstOrNull()?.message?.content
                 if (content != null) {
-                    Result.success(content)
+                    Result.success(ModelResponse(content, body.usage, elapsedMs))
                 } else {
                     Result.failure(Exception("Empty response from API"))
                 }
             } else {
-                val errorMsg = response.errorBody()?.string()?.let { body ->
+                val errorMsg = response.errorBody()?.string()?.let { raw ->
                     try {
-                        Gson().fromJson(body, ErrorBody::class.java)?.error?.message ?: body
+                        Gson().fromJson(raw, ErrorBody::class.java)?.error?.message ?: raw
                     } catch (_: Exception) {
-                        body
+                        raw
                     }
                 } ?: "Error: ${response.code()} ${response.message()}"
                 Result.failure(Exception(errorMsg))

@@ -16,10 +16,10 @@ interface DeepSeekApi {
     suspend fun createChatCompletion(@Body body: DeepSeekRequest): Response<DeepSeekResponse>
 }
 
-fun createDeepSeekApi(): DeepSeekApi {
+private fun buildApi(baseUrl: String, apiKey: String): DeepSeekApi {
     val authInterceptor = Interceptor { chain ->
         val request = chain.request().newBuilder()
-            .addHeader("Authorization", "Bearer ${BuildConfig.DEEPSEEK_API_KEY}")
+            .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Content-Type", "application/json")
             .build()
         chain.proceed(request)
@@ -32,13 +32,19 @@ fun createDeepSeekApi(): DeepSeekApi {
         .addInterceptor(authInterceptor)
         .addInterceptor(logging)
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
     val retrofit = Retrofit.Builder()
-        .baseUrl("https://api.deepseek.com/")
+        .baseUrl(baseUrl)
         .client(client)
         .addConverterFactory(GsonConverterFactory.create())
         .build()
     return retrofit.create(DeepSeekApi::class.java)
 }
+
+fun createDeepSeekApi(): DeepSeekApi =
+    buildApi("https://api.deepseek.com/", BuildConfig.DEEPSEEK_API_KEY)
+
+fun createRouterAiApi(): DeepSeekApi =
+    buildApi("https://routerai.ru/api/v1/", BuildConfig.ROUTERAI_API_KEY)

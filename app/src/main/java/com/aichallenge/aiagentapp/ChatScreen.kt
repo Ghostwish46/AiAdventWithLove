@@ -1,6 +1,7 @@
 package com.aichallenge.aiagentapp
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,13 +15,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -36,9 +37,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.aichallenge.aiagentapp.data.AVAILABLE_MODELS
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @Composable
 fun ChatScreen(viewModel: ChatViewModel) {
@@ -46,8 +48,6 @@ fun ChatScreen(viewModel: ChatViewModel) {
     val clipboardManager = LocalClipboardManager.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-
-    val temperatureValid = state.temperatureInput.toDoubleOrNull()?.let { it in 0.0..2.0 } ?: false
 
     Box(
         modifier = Modifier
@@ -64,7 +64,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 onValueChange = viewModel::updateQuery,
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("Your question") },
-                placeholder = { Text("Ask DeepSeek...") },
+                placeholder = { Text("Ask something...") },
                 enabled = !state.isLoading,
                 minLines = 2,
                 maxLines = 4
@@ -72,16 +72,21 @@ fun ChatScreen(viewModel: ChatViewModel) {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            OutlinedTextField(
-                value = state.temperatureInput,
-                onValueChange = viewModel::updateTemperature,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Temperature (0.0 – 2.0)") },
-                enabled = !state.isLoading,
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                isError = state.temperatureInput.isNotEmpty() && !temperatureValid
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                AVAILABLE_MODELS.forEach { model ->
+                    FilterChip(
+                        selected = state.selectedModel == model,
+                        onClick = { viewModel.selectModel(model) },
+                        label = { Text(model.label) },
+                        enabled = !state.isLoading
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -92,7 +97,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 Button(
                     onClick = { viewModel.send() },
                     modifier = Modifier.weight(1f),
-                    enabled = state.query.isNotBlank() && temperatureValid && !state.isLoading
+                    enabled = state.query.isNotBlank() && !state.isLoading
                 ) {
                     Text("Send")
                 }
@@ -116,7 +121,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 state.results.forEach { result ->
-                    TemperatureResultCard(
+                    ModelResultCard(
                         result = result,
                         onCopy = { text ->
                             clipboardManager.setText(AnnotatedString(text))
@@ -135,8 +140,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
 }
 
 @Composable
-private fun TemperatureResultCard(
-    result: TemperatureResult,
+private fun ModelResultCard(
+    result: ModelResult,
     onCopy: (String) -> Unit
 ) {
     when {
@@ -154,7 +159,7 @@ private fun TemperatureResultCard(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "temperature = ${result.temperature}",
+                        text = "${result.model.label} (${result.model.tier})",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -173,7 +178,7 @@ private fun TemperatureResultCard(
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
-                        text = "temperature = ${result.temperature}",
+                        text = "${result.model.label} (${result.model.tier})",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onErrorContainer
                     )
@@ -198,17 +203,25 @@ private fun TemperatureResultCard(
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
-                        text = "temperature = ${result.temperature}",
+                        text = "${result.model.label} (${result.model.tier})",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    MetricsRow(result)
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(6.dp))
+
                     Text(
                         text = "Tap to copy",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.outline
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = result.response,
                         style = MaterialTheme.typography.bodyMedium,
@@ -216,6 +229,35 @@ private fun TemperatureResultCard(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun MetricsRow(result: ModelResult) {
+    val timeSec = result.elapsedMs / 1000.0
+    val usage = result.usage
+    val cost = result.estimateCostRub()
+
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = String.format(Locale.US, "⏱ %.1f сек", timeSec),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (usage != null) {
+            Text(
+                text = "📊 ${usage.promptTokens} prompt + ${usage.completionTokens} completion = ${usage.totalTokens} tokens",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (cost != null) {
+            Text(
+                text = String.format(Locale.US, "💰 ~%.4f ₽", cost),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
