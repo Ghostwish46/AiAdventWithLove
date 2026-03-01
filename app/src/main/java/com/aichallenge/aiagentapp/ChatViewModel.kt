@@ -3,18 +3,23 @@ package com.aichallenge.aiagentapp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichallenge.aiagentapp.data.DeepSeekRepository
-import com.aichallenge.aiagentapp.data.PromptStrategy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-data class ChatUiState(
-    val query: String = "",
-    val selectedStrategy: PromptStrategy = PromptStrategy.DIRECT,
+data class TemperatureResult(
+    val temperature: Double,
     val response: String = "",
     val isLoading: Boolean = false,
     val error: String? = null
+)
+
+data class ChatUiState(
+    val query: String = "",
+    val temperatureInput: String = "0.7",
+    val results: List<TemperatureResult> = emptyList(),
+    val isLoading: Boolean = false
 )
 
 class ChatViewModel(private val repository: DeepSeekRepository) : ViewModel() {
@@ -23,35 +28,55 @@ class ChatViewModel(private val repository: DeepSeekRepository) : ViewModel() {
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     fun updateQuery(text: String) {
-        _uiState.value = _uiState.value.copy(query = text, error = null)
+        _uiState.value = _uiState.value.copy(query = text)
     }
 
-    fun updateStrategy(strategy: PromptStrategy) {
-        _uiState.value = _uiState.value.copy(selectedStrategy = strategy, error = null)
+    fun updateTemperature(text: String) {
+        val filtered = text.filter { it.isDigit() || it == '.' }
+        _uiState.value = _uiState.value.copy(temperatureInput = filtered)
     }
 
     fun send() {
         val state = _uiState.value
         if (state.query.isBlank() || state.isLoading) return
+
+        val temp = state.temperatureInput.toDoubleOrNull()
+        if (temp == null || temp < 0 || temp > 2) return
+
+        val newResult = TemperatureResult(temperature = temp, isLoading = true)
+        val updatedResults = state.results + newResult
+        _uiState.value = state.copy(results = updatedResults, isLoading = true)
+
+        val resultIndex = updatedResults.lastIndex
+
         viewModelScope.launch {
-            _uiState.value = state.copy(isLoading = true, error = null, response = "")
-            repository.sendWithStrategy(state.query, state.selectedStrategy)
+            repository.sendWithTemperature(state.query, temp)
                 .onSuccess { content ->
                     _uiState.value = _uiState.value.copy(
-                        response = content,
+                        results = _uiState.value.results.toMutableList().apply {
+                            this[resultIndex] = this[resultIndex].copy(
+                                response = content,
+                                isLoading = false
+                            )
+                        },
                         isLoading = false
                     )
                 }
                 .onFailure { e ->
                     _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        error = e.message ?: "Unknown error"
+                        results = _uiState.value.results.toMutableList().apply {
+                            this[resultIndex] = this[resultIndex].copy(
+                                isLoading = false,
+                                error = e.message ?: "Unknown error"
+                            )
+                        },
+                        isLoading = false
                     )
                 }
         }
     }
 
-    fun clearError() {
-        _uiState.value = _uiState.value.copy(error = null)
+    fun clearResults() {
+        _uiState.value = _uiState.value.copy(results = emptyList())
     }
 }

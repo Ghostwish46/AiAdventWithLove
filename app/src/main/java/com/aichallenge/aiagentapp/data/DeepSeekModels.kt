@@ -2,13 +2,6 @@ package com.aichallenge.aiagentapp.data
 
 import com.google.gson.annotations.SerializedName
 
-enum class PromptStrategy(val label: String) {
-    DIRECT("Прямой ответ"),
-    STEP_BY_STEP("Пошагово"),
-    SELF_PROMPT("Сгенерируй промпт"),
-    EXPERTS("Группа экспертов")
-}
-
 // --- Request ---
 
 data class DeepSeekRequest(

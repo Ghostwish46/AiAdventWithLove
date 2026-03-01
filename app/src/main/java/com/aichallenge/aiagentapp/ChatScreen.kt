@@ -1,7 +1,6 @@
 package com.aichallenge.aiagentapp
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,16 +12,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -36,8 +36,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.aichallenge.aiagentapp.data.PromptStrategy
 import kotlinx.coroutines.launch
 
 @Composable
@@ -46,6 +46,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
     val clipboardManager = LocalClipboardManager.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    val temperatureValid = state.temperatureInput.toDoubleOrNull()?.let { it in 0.0..2.0 } ?: false
 
     Box(
         modifier = Modifier
@@ -70,111 +72,58 @@ fun ChatScreen(viewModel: ChatViewModel) {
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            OutlinedTextField(
+                value = state.temperatureInput,
+                onValueChange = viewModel::updateTemperature,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Temperature (0.0 – 2.0)") },
+                enabled = !state.isLoading,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                isError = state.temperatureInput.isNotEmpty() && !temperatureValid
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                PromptStrategy.entries.forEach { strategy ->
-                    FilterChip(
-                        selected = state.selectedStrategy == strategy,
-                        onClick = { viewModel.updateStrategy(strategy) },
-                        label = { Text(strategy.label) },
-                        enabled = !state.isLoading
-                    )
+                Button(
+                    onClick = { viewModel.send() },
+                    modifier = Modifier.weight(1f),
+                    enabled = state.query.isNotBlank() && temperatureValid && !state.isLoading
+                ) {
+                    Text("Send")
+                }
+
+                OutlinedButton(
+                    onClick = { viewModel.clearResults() },
+                    modifier = Modifier.weight(1f),
+                    enabled = state.results.isNotEmpty() && !state.isLoading
+                ) {
+                    Text("Clear")
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                when {
-                    state.isLoading -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier.align(Alignment.Center)
-                        )
-                    }
-                    state.error != null -> {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer
-                            )
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    text = state.error!!,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.End
-                                ) {
-                                    Button(onClick = { viewModel.clearError() }) {
-                                        Text("OK")
-                                    }
-                                }
-                            }
+                state.results.forEach { result ->
+                    TemperatureResultCard(
+                        result = result,
+                        onCopy = { text ->
+                            clipboardManager.setText(AnnotatedString(text))
+                            scope.launch { snackbarHostState.showSnackbar("Copied!") }
                         }
-                    }
-                    state.response.isNotBlank() -> {
-                        Card(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clickable {
-                                    clipboardManager.setText(AnnotatedString(state.response))
-                                    scope.launch {
-                                        snackbarHostState.showSnackbar("Copied!")
-                                    }
-                                },
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .verticalScroll(rememberScrollState())
-                                    .padding(12.dp)
-                            ) {
-                                Text(
-                                    text = state.selectedStrategy.label,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "Tap to copy",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.outline
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = state.response,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        }
-                    }
+                    )
                 }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Button(
-                onClick = { viewModel.send() },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = state.query.isNotBlank() && !state.isLoading
-            ) {
-                Text("Send")
             }
         }
 
@@ -182,5 +131,91 @@ fun ChatScreen(viewModel: ChatViewModel) {
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
+    }
+}
+
+@Composable
+private fun TemperatureResultCard(
+    result: TemperatureResult,
+    onCopy: (String) -> Unit
+) {
+    when {
+        result.isLoading -> {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "temperature = ${result.temperature}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    CircularProgressIndicator()
+                }
+            }
+        }
+
+        result.error != null -> {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "temperature = ${result.temperature}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = result.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+        }
+
+        else -> {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onCopy(result.response) },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "temperature = ${result.temperature}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Tap to copy",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = result.response,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
     }
 }

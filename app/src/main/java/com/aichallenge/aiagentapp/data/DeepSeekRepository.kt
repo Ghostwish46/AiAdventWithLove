@@ -17,49 +17,17 @@ data class ErrorDetail(
 
 class DeepSeekRepository(private val api: DeepSeekApi) {
 
-    suspend fun sendWithStrategy(
+    suspend fun sendWithTemperature(
         userMessage: String,
-        strategy: PromptStrategy
+        temperature: Double
     ): Result<String> = withContext(Dispatchers.IO) {
         if (userMessage.isBlank()) return@withContext Result.failure(IllegalArgumentException("Empty message"))
 
-        val messages = when (strategy) {
-            PromptStrategy.DIRECT -> listOf(
-                ChatMessage(role = "user", content = userMessage.trim())
-            )
-            PromptStrategy.STEP_BY_STEP -> listOf(
-                ChatMessage(
-                    role = "system",
-                    content = "Реши задачу пошагово, объясняя каждый шаг рассуждения. " +
-                            "Нумеруй шаги. В конце дай итоговый ответ."
-                ),
-                ChatMessage(role = "user", content = userMessage.trim())
-            )
-            PromptStrategy.SELF_PROMPT -> listOf(
-                ChatMessage(
-                    role = "system",
-                    content = "Ты — эксперт по prompt engineering. " +
-                            "Составь оптимальный промпт для решения задачи пользователя. " +
-                            "Выведи ТОЛЬКО готовый промпт, без решения задачи и без пояснений."
-                ),
-                ChatMessage(role = "user", content = userMessage.trim())
-            )
-            PromptStrategy.EXPERTS -> listOf(
-                ChatMessage(
-                    role = "system",
-                    content = "Ты — группа экспертов (от 3 до 5 человек), имеющих прямое отношение к вопросу пользователя. " +
-                            "Сначала перечисли выбранных экспертов (имя и роль/специализация). " +
-                            "Затем каждый эксперт даёт свой развёрнутый ответ, подписывая имя и роль. " +
-                            "Эксперты могут дополнять или не соглашаться друг с другом."
-                ),
-                ChatMessage(role = "user", content = userMessage.trim())
-            )
-        }
-
         val request = DeepSeekRequest(
             model = "deepseek-chat",
-            messages = messages,
-            stream = false
+            messages = listOf(ChatMessage(role = "user", content = userMessage.trim())),
+            stream = false,
+            temperature = temperature
         )
 
         executeRequest(request)
