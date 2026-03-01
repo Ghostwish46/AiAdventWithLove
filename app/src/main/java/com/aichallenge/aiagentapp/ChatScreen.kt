@@ -1,7 +1,6 @@
 package com.aichallenge.aiagentapp
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,250 +12,231 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
-import com.aichallenge.aiagentapp.data.AVAILABLE_MODELS
-import kotlinx.coroutines.launch
+import com.aichallenge.aiagentapp.data.ModelInfo
 import java.util.Locale
 
 @Composable
 fun ChatScreen(viewModel: ChatViewModel) {
     val state by viewModel.uiState.collectAsState()
-    val clipboardManager = LocalClipboardManager.current
-    val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
 
-    Box(
+    LaunchedEffect(state.messages.size) {
+        if (state.messages.isNotEmpty()) {
+            listState.animateScrollToItem(state.messages.lastIndex)
+        }
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.safeDrawing)
     ) {
-        Column(
+        Row(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            OutlinedTextField(
-                value = state.query,
-                onValueChange = viewModel::updateQuery,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Your question") },
-                placeholder = { Text("Ask something...") },
-                enabled = !state.isLoading,
-                minLines = 2,
-                maxLines = 4
+            Text(
+                text = "AI Agent",
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f)
             )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                AVAILABLE_MODELS.forEach { model ->
-                    FilterChip(
-                        selected = state.selectedModel == model,
-                        onClick = { viewModel.selectModel(model) },
-                        label = { Text(model.label) },
-                        enabled = !state.isLoading
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = { viewModel.send() },
-                    modifier = Modifier.weight(1f),
-                    enabled = state.query.isNotBlank() && !state.isLoading
-                ) {
-                    Text("Send")
-                }
-
-                OutlinedButton(
-                    onClick = { viewModel.clearResults() },
-                    modifier = Modifier.weight(1f),
-                    enabled = state.results.isNotEmpty() && !state.isLoading
-                ) {
-                    Text("Clear")
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                state.results.forEach { result ->
-                    ModelResultCard(
-                        result = result,
-                        onCopy = { text ->
-                            clipboardManager.setText(AnnotatedString(text))
-                            scope.launch { snackbarHostState.showSnackbar("Copied!") }
-                        }
+            if (state.messages.isNotEmpty()) {
+                IconButton(onClick = { viewModel.clearChat() }) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Clear chat"
                     )
                 }
             }
         }
 
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter)
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(state.messages) { message ->
+                MessageBubble(
+                    message = message,
+                    modelInfo = viewModel.modelInfo,
+                    maxWidth = screenWidth * 0.78f
+                )
+            }
+
+            item { Spacer(modifier = Modifier.height(4.dp)) }
+        }
+
+        InputBar(
+            input = state.input,
+            isLoading = state.isLoading,
+            onInputChange = viewModel::updateInput,
+            onSend = viewModel::send
         )
     }
 }
 
 @Composable
-private fun ModelResultCard(
-    result: ModelResult,
-    onCopy: (String) -> Unit
+private fun MessageBubble(
+    message: UiMessage,
+    modelInfo: ModelInfo,
+    maxWidth: androidx.compose.ui.unit.Dp
 ) {
-    when {
-        result.isLoading -> {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "${result.model.label} (${result.model.tier})",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    CircularProgressIndicator()
-                }
-            }
+    val isUser = message.role == "user"
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+    ) {
+        val bgColor = when {
+            message.isError -> MaterialTheme.colorScheme.errorContainer
+            isUser -> MaterialTheme.colorScheme.primaryContainer
+            else -> MaterialTheme.colorScheme.secondaryContainer
         }
-
-        result.error != null -> {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer
-                )
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "${result.model.label} (${result.model.tier})",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = result.error,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                }
-            }
+        val textColor = when {
+            message.isError -> MaterialTheme.colorScheme.onErrorContainer
+            isUser -> MaterialTheme.colorScheme.onPrimaryContainer
+            else -> MaterialTheme.colorScheme.onSecondaryContainer
         }
+        val shape = RoundedCornerShape(
+            topStart = 16.dp,
+            topEnd = 16.dp,
+            bottomStart = if (isUser) 16.dp else 4.dp,
+            bottomEnd = if (isUser) 4.dp else 16.dp
+        )
 
-        else -> {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onCopy(result.response) },
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+        Column(
+            modifier = Modifier
+                .widthIn(max = maxWidth)
+                .clip(shape)
+                .background(bgColor)
+                .padding(12.dp)
+        ) {
+            if (message.isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp
                 )
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "${result.model.label} (${result.model.tier})",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                if (!isUser && (message.usage != null || message.elapsedMs > 0)) {
+                    MessageMetrics(
+                        usage = message.usage,
+                        elapsedMs = message.elapsedMs,
+                        modelInfo = modelInfo,
+                        textColor = textColor
                     )
-
                     Spacer(modifier = Modifier.height(6.dp))
-
-                    MetricsRow(result)
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    Text(
-                        text = "Tap to copy",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = result.response,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
                 }
+                Text(
+                    text = message.content,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = textColor
+                )
             }
         }
     }
 }
 
 @Composable
-private fun MetricsRow(result: ModelResult) {
-    val timeSec = result.elapsedMs / 1000.0
-    val usage = result.usage
-    val cost = result.estimateCostRub()
-
+private fun MessageMetrics(
+    usage: com.aichallenge.aiagentapp.data.Usage?,
+    elapsedMs: Long,
+    modelInfo: ModelInfo,
+    textColor: androidx.compose.ui.graphics.Color
+) {
+    val timeSec = elapsedMs / 1000.0
+    val cost = usage?.let { u ->
+        u.promptTokens.toDouble() / 1_000_000 * modelInfo.inputPricePerM +
+            u.completionTokens.toDouble() / 1_000_000 * modelInfo.outputPricePerM
+    }
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             text = String.format(Locale.US, "⏱ %.1f сек", timeSec),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            style = MaterialTheme.typography.labelSmall,
+            color = textColor
         )
         if (usage != null) {
             Text(
-                text = "📊 ${usage.promptTokens} prompt + ${usage.completionTokens} completion = ${usage.totalTokens} tokens",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = "📊 ${usage.promptTokens} + ${usage.completionTokens} = ${usage.totalTokens} токенов",
+                style = MaterialTheme.typography.labelSmall,
+                color = textColor
             )
         }
         if (cost != null) {
             Text(
                 text = String.format(Locale.US, "💰 ~%.4f ₽", cost),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                style = MaterialTheme.typography.labelSmall,
+                color = textColor
+            )
+        }
+    }
+}
+
+@Composable
+private fun InputBar(
+    input: String,
+    isLoading: Boolean,
+    onInputChange: (String) -> Unit,
+    onSend: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OutlinedTextField(
+            value = input,
+            onValueChange = onInputChange,
+            modifier = Modifier.weight(1f),
+            placeholder = { Text("Напишите сообщение...") },
+            enabled = !isLoading,
+            maxLines = 4,
+            shape = RoundedCornerShape(24.dp)
+        )
+
+        IconButton(
+            onClick = onSend,
+            enabled = input.isNotBlank() && !isLoading
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.Send,
+                contentDescription = "Send",
+                tint = if (input.isNotBlank() && !isLoading)
+                    MaterialTheme.colorScheme.primary
+                else
+                    MaterialTheme.colorScheme.outline
             )
         }
     }

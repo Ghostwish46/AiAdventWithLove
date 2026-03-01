@@ -17,15 +17,15 @@ data class ErrorDetail(
 
 class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
 
-    suspend fun sendWithModel(
-        userMessage: String,
+    suspend fun sendMessages(
+        messages: List<ChatMessage>,
         modelId: String
-    ): Result<ModelResponse> = withContext(Dispatchers.IO) {
-        if (userMessage.isBlank()) return@withContext Result.failure(IllegalArgumentException("Empty message"))
+    ): Result<AgentTurnResult> = withContext(Dispatchers.IO) {
+        if (messages.isEmpty()) return@withContext Result.failure(IllegalArgumentException("No messages"))
 
         val request = DeepSeekRequest(
             model = modelId,
-            messages = listOf(ChatMessage(role = "user", content = userMessage.trim())),
+            messages = messages,
             stream = false
         )
 
@@ -38,7 +38,7 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
                 val body = response.body()
                 val content = body?.choices?.firstOrNull()?.message?.content
                 if (content != null) {
-                    Result.success(ModelResponse(content, body.usage, elapsedMs))
+                    Result.success(AgentTurnResult(content, body.usage, elapsedMs))
                 } else {
                     Result.failure(Exception("Empty response from API"))
                 }
@@ -59,3 +59,9 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
         }
     }
 }
+
+data class AgentTurnResult(
+    val content: String,
+    val usage: Usage?,
+    val elapsedMs: Long
+)
