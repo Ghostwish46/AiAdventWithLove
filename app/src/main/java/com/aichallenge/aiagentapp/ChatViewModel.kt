@@ -15,7 +15,8 @@ data class UiMessage(
     val isLoading: Boolean = false,
     val isError: Boolean = false,
     val usage: Usage? = null,
-    val elapsedMs: Long = 0
+    val elapsedMs: Long = 0,
+    val estimatedCostRub: Double? = null
 )
 
 data class ChatUiState(
@@ -24,10 +25,7 @@ data class ChatUiState(
     val isLoading: Boolean = false
 )
 
-class ChatViewModel(
-    private val agent: SimpleAgent,
-    val modelInfo: com.aichallenge.aiagentapp.data.ModelInfo
-) : ViewModel() {
+class ChatViewModel(private val agent: SimpleAgent) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -57,7 +55,8 @@ class ChatViewModel(
                             role = "assistant",
                             content = turn.content,
                             usage = turn.usage,
-                            elapsedMs = turn.elapsedMs
+                            elapsedMs = turn.elapsedMs,
+                            estimatedCostRub = turn.estimatedCostRub
                         )
                     )
                 }

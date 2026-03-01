@@ -63,5 +63,6 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
 data class AgentTurnResult(
     val content: String,
     val usage: Usage?,
-    val elapsedMs: Long
+    val elapsedMs: Long,
+    val estimatedCostRub: Double? = null
 )

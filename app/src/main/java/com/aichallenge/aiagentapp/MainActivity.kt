@@ -20,19 +20,18 @@ class MainActivity : ComponentActivity() {
 
         val api = createRouterAiApi()
         val repository = DeepSeekRepository(api)
-        val agentModel = ModelInfo(
-            id = "qwen/qwen3.5-flash-02-23",
-            label = "Qwen Flash",
-            tier = "Быстрая",
-            inputPricePerM = 10.0,
-            outputPricePerM = 40.0
-        )
         val agent = SimpleAgent(
             repository = repository,
-            systemPrompt = "Ты полезный AI-ассистент. Отвечай чётко и по делу на русском языке.",
-            modelId = agentModel.id
+            modelInfo = ModelInfo(
+                id = "qwen/qwen3.5-flash-02-23",
+                label = "Qwen Flash",
+                tier = "Быстрая",
+                inputPricePerM = 10.0,
+                outputPricePerM = 40.0
+            ),
+            systemPrompt = "Ты полезный AI-ассистент. Отвечай чётко и по делу на русском языке."
         )
-        val viewModel = ChatViewModel(agent, agentModel)
+        val viewModel = ChatViewModel(agent)
 
         setContent {
             MaterialTheme {

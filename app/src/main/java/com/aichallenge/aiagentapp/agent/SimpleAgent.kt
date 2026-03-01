@@ -3,11 +3,12 @@ package com.aichallenge.aiagentapp.agent
 import com.aichallenge.aiagentapp.data.AgentTurnResult
 import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.DeepSeekRepository
+import com.aichallenge.aiagentapp.data.ModelInfo
 
 class SimpleAgent(
     private val repository: DeepSeekRepository,
-    private val systemPrompt: String = "Ты полезный AI-ассистент. Отвечай чётко и по делу.",
-    private val modelId: String = "qwen/qwen3.5-flash-02-23"
+    private val modelInfo: ModelInfo,
+    private val systemPrompt: String = "Ты полезный AI-ассистент. Отвечай чётко и по делу."
 ) {
     private val conversationHistory = mutableListOf<ChatMessage>()
 
@@ -23,13 +24,16 @@ class SimpleAgent(
             addAll(conversationHistory)
         }
 
-        val result = repository.sendMessages(allMessages, modelId)
+        val result = repository.sendMessages(allMessages, modelInfo.id)
 
-        result.onSuccess { turn ->
+        return result.mapCatching { turn ->
+            val cost = turn.usage?.let { u ->
+                u.promptTokens.toDouble() / 1_000_000 * modelInfo.inputPricePerM +
+                    u.completionTokens.toDouble() / 1_000_000 * modelInfo.outputPricePerM
+            }
             conversationHistory.add(ChatMessage(role = "assistant", content = turn.content))
+            turn.copy(estimatedCostRub = cost)
         }
-
-        return result
     }
 
     fun getHistory(): List<ChatMessage> = conversationHistory.toList()

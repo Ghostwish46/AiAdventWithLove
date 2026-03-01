@@ -37,7 +37,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
-import com.aichallenge.aiagentapp.data.ModelInfo
 import java.util.Locale
 
 @Composable
@@ -89,7 +88,6 @@ fun ChatScreen(viewModel: ChatViewModel) {
             items(state.messages) { message ->
                 MessageBubble(
                     message = message,
-                    modelInfo = viewModel.modelInfo,
                     maxWidth = screenWidth * 0.78f
                 )
             }
@@ -109,7 +107,6 @@ fun ChatScreen(viewModel: ChatViewModel) {
 @Composable
 private fun MessageBubble(
     message: UiMessage,
-    modelInfo: ModelInfo,
     maxWidth: androidx.compose.ui.unit.Dp
 ) {
     val isUser = message.role == "user"
@@ -152,7 +149,7 @@ private fun MessageBubble(
                     MessageMetrics(
                         usage = message.usage,
                         elapsedMs = message.elapsedMs,
-                        modelInfo = modelInfo,
+                        estimatedCostRub = message.estimatedCostRub,
                         textColor = textColor
                     )
                     Spacer(modifier = Modifier.height(6.dp))
@@ -171,14 +168,10 @@ private fun MessageBubble(
 private fun MessageMetrics(
     usage: com.aichallenge.aiagentapp.data.Usage?,
     elapsedMs: Long,
-    modelInfo: ModelInfo,
+    estimatedCostRub: Double?,
     textColor: androidx.compose.ui.graphics.Color
 ) {
     val timeSec = elapsedMs / 1000.0
-    val cost = usage?.let { u ->
-        u.promptTokens.toDouble() / 1_000_000 * modelInfo.inputPricePerM +
-            u.completionTokens.toDouble() / 1_000_000 * modelInfo.outputPricePerM
-    }
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             text = String.format(Locale.US, "⏱ %.1f сек", timeSec),
@@ -192,9 +185,9 @@ private fun MessageMetrics(
                 color = textColor
             )
         }
-        if (cost != null) {
+        if (estimatedCostRub != null) {
             Text(
-                text = String.format(Locale.US, "💰 ~%.4f ₽", cost),
+                text = String.format(Locale.US, "💰 ~%.4f ₽", estimatedCostRub),
                 style = MaterialTheme.typography.labelSmall,
                 color = textColor
             )
