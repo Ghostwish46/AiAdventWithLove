@@ -3,11 +3,14 @@ package com.aichallenge.aiagentapp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichallenge.aiagentapp.agent.SimpleAgent
+import com.aichallenge.aiagentapp.data.Conversation
+import com.aichallenge.aiagentapp.data.ConversationRepository
 import com.aichallenge.aiagentapp.data.Usage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 data class UiMessage(
     val role: String,
@@ -25,9 +28,16 @@ data class ChatUiState(
     val isLoading: Boolean = false
 )
 
-class ChatViewModel(private val agent: SimpleAgent) : ViewModel() {
+class ChatViewModel(
+    private val agent: SimpleAgent,
+    conversationId: String?,
+    private val conversationRepository: ConversationRepository,
+    initialMessages: List<UiMessage> = emptyList()
+) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(ChatUiState())
+    private var currentConversationId: String? = conversationId
+
+    private val _uiState = MutableStateFlow(ChatUiState(messages = initialMessages))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     fun updateInput(text: String) {
@@ -59,6 +69,7 @@ class ChatViewModel(private val agent: SimpleAgent) : ViewModel() {
                             estimatedCostRub = turn.estimatedCostRub
                         )
                     )
+                    persistConversation()
                 }
                 .onFailure { e ->
                     replaceLastMessage(
@@ -75,6 +86,24 @@ class ChatViewModel(private val agent: SimpleAgent) : ViewModel() {
     fun clearChat() {
         agent.clearHistory()
         _uiState.value = ChatUiState()
+        currentConversationId = null
+    }
+
+    private fun persistConversation() {
+        val history = agent.getHistory()
+        if (history.isEmpty()) return
+        val id = currentConversationId ?: UUID.randomUUID().toString().also { currentConversationId = it }
+        val title = history.asSequence()
+            .filter { it.role == "user" }
+            .map { it.content.trim().take(50).ifBlank { null } }
+            .firstOrNull() ?: "Новая тема"
+        val conversation = Conversation(
+            id = id,
+            title = title,
+            messages = history,
+            updatedAtMillis = System.currentTimeMillis()
+        )
+        conversationRepository.save(conversation)
     }
 
     private fun replaceLastMessage(msg: UiMessage) {

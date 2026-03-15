@@ -8,9 +8,10 @@ import com.aichallenge.aiagentapp.data.ModelInfo
 class SimpleAgent(
     private val repository: DeepSeekRepository,
     private val modelInfo: ModelInfo,
-    private val systemPrompt: String = "Ты полезный AI-ассистент. Отвечай чётко и по делу."
+    private val systemPrompt: String = "Ты полезный AI-ассистент. Отвечай чётко и по делу.",
+    initialHistory: List<ChatMessage> = emptyList()
 ) {
-    private val conversationHistory = mutableListOf<ChatMessage>()
+    private val conversationHistory = mutableListOf<ChatMessage>().apply { addAll(initialHistory) }
 
     suspend fun processQuery(userMessage: String): Result<AgentTurnResult> {
         if (userMessage.isBlank()) {

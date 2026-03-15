@@ -8,7 +8,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.aichallenge.aiagentapp.agent.SimpleAgent
+import com.aichallenge.aiagentapp.data.ConversationRepository
 import com.aichallenge.aiagentapp.data.DeepSeekRepository
 import com.aichallenge.aiagentapp.data.ModelInfo
 import com.aichallenge.aiagentapp.data.createRouterAiApi
@@ -19,24 +28,70 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         val api = createRouterAiApi()
-        val repository = DeepSeekRepository(api)
-        val agent = SimpleAgent(
-            repository = repository,
-            modelInfo = ModelInfo(
-                id = "qwen/qwen3.5-flash-02-23",
-                label = "Qwen Flash",
-                tier = "Быстрая",
-                inputPricePerM = 10.0,
-                outputPricePerM = 40.0
-            ),
-            systemPrompt = "Ты полезный AI-ассистент. Отвечай чётко и по делу на русском языке."
+        val deepSeekRepository = DeepSeekRepository(api)
+        val conversationRepository = ConversationRepository(applicationContext)
+        val modelInfo = ModelInfo(
+            id = "openai/gpt-oss-120b",
+            label = "GPT-OSS 120B",
+            tier = "Сильная",
+            inputPricePerM = 5.0,
+            outputPricePerM = 26.0
         )
-        val viewModel = ChatViewModel(agent)
+        val systemPrompt = "Ты полезный AI-ассистент. Отвечай чётко и по делу на русском языке."
 
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    ChatScreen(viewModel = viewModel)
+                    val navController = rememberNavController()
+                    NavHost(
+                        navController = navController,
+                        startDestination = "chat/new"
+                    ) {
+                        composable("home") {
+                            val homeViewModel: HomeViewModel = viewModel {
+                                HomeViewModel(conversationRepository)
+                            }
+                            HomeScreen(
+                                viewModel = homeViewModel,
+                                navController = navController
+                            )
+                        }
+                        composable(
+                            route = "chat/{conversationId}",
+                            arguments = listOf(navArgument("conversationId") { type = NavType.StringType })
+                        ) { backStackEntry ->
+                            val conversationId = backStackEntry.arguments?.getString("conversationId") ?: "new"
+                            val chatViewModel: ChatViewModel = viewModel(
+                                key = conversationId,
+                                factory = object : ViewModelProvider.Factory {
+                                    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                                        val conv = if (conversationId == "new") null else conversationRepository.getById(conversationId)
+                                        val initialHistory = conv?.messages ?: emptyList()
+                                        val agent = SimpleAgent(
+                                            repository = deepSeekRepository,
+                                            modelInfo = modelInfo,
+                                            systemPrompt = systemPrompt,
+                                            initialHistory = initialHistory
+                                        )
+                                        val initialMessages = conv?.messages?.map { m ->
+                                            UiMessage(role = m.role, content = m.content)
+                                        } ?: emptyList()
+                                        @Suppress("UNCHECKED_CAST")
+                                        return ChatViewModel(
+                                            agent = agent,
+                                            conversationId = if (conversationId == "new") null else conversationId,
+                                            conversationRepository = conversationRepository,
+                                            initialMessages = initialMessages
+                                        ) as T
+                                    }
+                                }
+                            )
+                            ChatScreen(
+                                viewModel = chatViewModel,
+                                navController = navController
+                            )
+                        }
+                    }
                 }
             }
         }
