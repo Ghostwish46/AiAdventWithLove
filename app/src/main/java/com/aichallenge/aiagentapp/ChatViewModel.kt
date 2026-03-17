@@ -5,11 +5,16 @@ import androidx.lifecycle.viewModelScope
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.data.Conversation
 import com.aichallenge.aiagentapp.data.ConversationRepository
+import com.aichallenge.aiagentapp.data.SavedMessage
 import com.aichallenge.aiagentapp.data.Usage
+import com.aichallenge.aiagentapp.data.StreamEvent
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import java.util.UUID
 
 data class UiMessage(
@@ -25,14 +30,17 @@ data class UiMessage(
 data class ChatUiState(
     val input: String = "",
     val messages: List<UiMessage> = emptyList(),
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    /** Текст, который приходит чанками во время стриминга; отображается поверх последнего сообщения */
+    val streamingContent: String = ""
 )
 
 class ChatViewModel(
     private val agent: SimpleAgent,
     conversationId: String?,
     private val conversationRepository: ConversationRepository,
-    initialMessages: List<UiMessage> = emptyList()
+    initialMessages: List<UiMessage> = emptyList(),
+    val contextLength: Int? = null
 ) : ViewModel() {
 
     private var currentConversationId: String? = conversationId
@@ -57,21 +65,11 @@ class ChatViewModel(
             isLoading = true
         )
 
+        val startMs = System.currentTimeMillis()
         viewModelScope.launch {
-            agent.processQuery(text)
-                .onSuccess { turn ->
-                    replaceLastMessage(
-                        UiMessage(
-                            role = "assistant",
-                            content = turn.content,
-                            usage = turn.usage,
-                            elapsedMs = turn.elapsedMs,
-                            estimatedCostRub = turn.estimatedCostRub
-                        )
-                    )
-                    persistConversation()
-                }
-                .onFailure { e ->
+            agent.processQueryStreaming(text)
+                .catch { e ->
+                    clearStreamingContent()
                     replaceLastMessage(
                         UiMessage(
                             role = "assistant",
@@ -80,7 +78,56 @@ class ChatViewModel(
                         )
                     )
                 }
+                .collect { event ->
+                    when (event) {
+                        is StreamEvent.Chunk -> {
+                            appendStreamingContent(event.text)
+                            yield() // даём UI перерисоваться до следующего чанка
+                        }
+                        is StreamEvent.Done -> {
+                            val elapsedMs = System.currentTimeMillis() - startMs
+                            val accumulated = _uiState.value.streamingContent
+                            clearStreamingContent()
+                            val last = _uiState.value.messages.lastOrNull() ?: return@collect
+                            agent.addAssistantMessage(accumulated)
+                            val cost = event.usage?.let { u ->
+                                u.promptTokens.toDouble() / 1_000_000 * (agent.getModelInfo().inputPricePerM) +
+                                    u.completionTokens.toDouble() / 1_000_000 * (agent.getModelInfo().outputPricePerM)
+                            }
+                            replaceLastMessage(
+                                last.copy(
+                                    content = accumulated,
+                                    usage = event.usage,
+                                    elapsedMs = elapsedMs,
+                                    estimatedCostRub = cost,
+                                    isLoading = false
+                                )
+                            )
+                            persistConversation()
+                        }
+                        is StreamEvent.Error -> {
+                            clearStreamingContent()
+                            replaceLastMessage(
+                                UiMessage(
+                                    role = "assistant",
+                                    content = event.message,
+                                    isError = true
+                                )
+                            )
+                        }
+                    }
+                }
         }
+    }
+
+    private fun appendStreamingContent(text: String) {
+        _uiState.value = _uiState.value.copy(
+            streamingContent = _uiState.value.streamingContent + text
+        )
+    }
+
+    private fun clearStreamingContent() {
+        _uiState.value = _uiState.value.copy(streamingContent = "")
     }
 
     fun clearChat() {
@@ -90,17 +137,28 @@ class ChatViewModel(
     }
 
     private fun persistConversation() {
-        val history = agent.getHistory()
-        if (history.isEmpty()) return
+        val messages = _uiState.value.messages
+        if (messages.isEmpty()) return
         val id = currentConversationId ?: UUID.randomUUID().toString().also { currentConversationId = it }
-        val title = history.asSequence()
+        val title = messages.asSequence()
             .filter { it.role == "user" }
             .map { it.content.trim().take(50).ifBlank { null } }
             .firstOrNull() ?: "Новая тема"
+        val savedMessages = messages.map { m ->
+            SavedMessage(
+                role = m.role,
+                content = m.content,
+                promptTokens = m.usage?.promptTokens,
+                completionTokens = m.usage?.completionTokens,
+                totalTokens = m.usage?.totalTokens,
+                elapsedMs = m.elapsedMs.takeIf { it > 0 },
+                estimatedCostRub = m.estimatedCostRub
+            )
+        }
         val conversation = Conversation(
             id = id,
             title = title,
-            messages = history,
+            messages = savedMessages,
             updatedAtMillis = System.currentTimeMillis()
         )
         conversationRepository.save(conversation)

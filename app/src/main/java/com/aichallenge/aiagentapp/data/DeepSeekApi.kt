@@ -4,16 +4,22 @@ import com.aichallenge.aiagentapp.BuildConfig
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.POST
+import retrofit2.http.Streaming
 import java.util.concurrent.TimeUnit
 
 interface DeepSeekApi {
     @POST("chat/completions")
     suspend fun createChatCompletion(@Body body: DeepSeekRequest): Response<DeepSeekResponse>
+
+    @Streaming
+    @POST("chat/completions")
+    suspend fun createChatCompletionStream(@Body body: DeepSeekRequest): Response<ResponseBody>
 }
 
 private fun buildApi(baseUrl: String, apiKey: String): DeepSeekApi {
@@ -25,7 +31,8 @@ private fun buildApi(baseUrl: String, apiKey: String): DeepSeekApi {
         chain.proceed(request)
     }
     val logging = HttpLoggingInterceptor().apply {
-        level = HttpLoggingInterceptor.Level.BODY
+        // BODY буферизует весь ответ и ломает стриминг (SSE). Используем HEADERS.
+        level = HttpLoggingInterceptor.Level.HEADERS
         redactHeader("Authorization")
     }
     val client = OkHttpClient.Builder()

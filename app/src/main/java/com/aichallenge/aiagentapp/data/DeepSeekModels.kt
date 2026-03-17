@@ -9,7 +9,8 @@ data class ModelInfo(
     val label: String,
     val tier: String,
     val inputPricePerM: Double,
-    val outputPricePerM: Double
+    val outputPricePerM: Double,
+    val contextLength: Int? = null
 )
 
 val AVAILABLE_MODELS = listOf(
@@ -70,4 +71,21 @@ data class Usage(
     @SerializedName("prompt_tokens") val promptTokens: Int = 0,
     @SerializedName("completion_tokens") val completionTokens: Int = 0,
     @SerializedName("total_tokens") val totalTokens: Int = 0
+)
+
+// --- Streaming (SSE) ---
+
+data class StreamChunk(
+    val choices: List<StreamChoice>? = null,
+    val usage: Usage? = null
+)
+
+data class StreamChoice(
+    val delta: StreamDelta? = null,
+    @SerializedName("finish_reason") val finishReason: String? = null
+)
+
+data class StreamDelta(
+    val content: String? = null,
+    val reasoning: String? = null
 )

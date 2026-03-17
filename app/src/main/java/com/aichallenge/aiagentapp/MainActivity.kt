@@ -35,7 +35,8 @@ class MainActivity : ComponentActivity() {
             label = "GPT-OSS 120B",
             tier = "Сильная",
             inputPricePerM = 5.0,
-            outputPricePerM = 26.0
+            outputPricePerM = 26.0,
+            contextLength = 131_000
         )
         val systemPrompt = "Ты полезный AI-ассистент. Отвечай чётко и по делу на русском языке."
 
@@ -66,22 +67,30 @@ class MainActivity : ComponentActivity() {
                                 factory = object : ViewModelProvider.Factory {
                                     override fun <T : ViewModel> create(modelClass: Class<T>): T {
                                         val conv = if (conversationId == "new") null else conversationRepository.getById(conversationId)
-                                        val initialHistory = conv?.messages ?: emptyList()
+                                        val savedMessages = conv?.messages ?: emptyList()
+                                        val initialHistory = savedMessages.map { it.toChatMessage() }
                                         val agent = SimpleAgent(
                                             repository = deepSeekRepository,
                                             modelInfo = modelInfo,
                                             systemPrompt = systemPrompt,
                                             initialHistory = initialHistory
                                         )
-                                        val initialMessages = conv?.messages?.map { m ->
-                                            UiMessage(role = m.role, content = m.content)
-                                        } ?: emptyList()
+                                        val initialMessages = savedMessages.map { sm ->
+                                            UiMessage(
+                                                role = sm.role,
+                                                content = sm.content,
+                                                usage = sm.toUsage(),
+                                                elapsedMs = sm.elapsedMs ?: 0,
+                                                estimatedCostRub = sm.estimatedCostRub
+                                            )
+                                        }
                                         @Suppress("UNCHECKED_CAST")
                                         return ChatViewModel(
                                             agent = agent,
                                             conversationId = if (conversationId == "new") null else conversationId,
                                             conversationRepository = conversationRepository,
-                                            initialMessages = initialMessages
+                                            initialMessages = initialMessages,
+                                            contextLength = modelInfo.contextLength
                                         ) as T
                                     }
                                 }

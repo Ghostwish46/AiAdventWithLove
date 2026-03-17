@@ -1,5 +1,9 @@
 package com.aichallenge.aiagentapp
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.CircularProgressIndicator
@@ -37,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
@@ -51,7 +57,7 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
 
-    LaunchedEffect(state.messages.size) {
+    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.content) {
         if (state.messages.isNotEmpty()) {
             listState.animateScrollToItem(state.messages.lastIndex)
         }
@@ -99,6 +105,20 @@ fun ChatScreen(
             }
         }
 
+        val lastRequestContextTokens = state.messages.lastOrNull { it.usage != null }?.usage?.promptTokens ?: 0
+        val totalTokensInDialog = state.messages.sumOf { it.usage?.totalTokens ?: 0 }
+        val totalCostInDialog = state.messages.sumOf { it.estimatedCostRub ?: 0.0 }
+        val contextLength = viewModel.contextLength
+
+        if (state.messages.isNotEmpty()) {
+            DialogSummary(
+                lastRequestContextTokens = lastRequestContextTokens,
+                totalTokensInDialog = totalTokensInDialog,
+                totalCostInDialog = totalCostInDialog,
+                contextLength = contextLength
+            )
+        }
+
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -107,9 +127,26 @@ fun ChatScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(state.messages) { message ->
+            items(
+                count = state.messages.size,
+                key = { index ->
+                    val m = state.messages[index]
+                    val isLastStreaming = state.isLoading && index == state.messages.lastIndex
+                    if (isLastStreaming) "streaming_$index" else "msg_$index"
+                }
+            ) { index ->
+                val message = state.messages[index]
+                val displayContent = if (
+                    state.isLoading &&
+                    index == state.messages.lastIndex &&
+                    message.role == "assistant"
+                ) {
+                    message.content + state.streamingContent
+                } else {
+                    message.content
+                }
                 MessageBubble(
-                    message = message,
+                    message = message.copy(content = displayContent),
                     maxWidth = screenWidth * 0.78f
                 )
             }
@@ -154,6 +191,7 @@ private fun MessageBubble(
             bottomEnd = if (isUser) 4.dp else 16.dp
         )
 
+        val context = LocalContext.current
         Column(
             modifier = Modifier
                 .widthIn(max = maxWidth)
@@ -161,26 +199,63 @@ private fun MessageBubble(
                 .background(bgColor)
                 .padding(12.dp)
         ) {
-            if (message.isLoading) {
+            if (message.isLoading && message.content.isEmpty()) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(20.dp),
                     strokeWidth = 2.dp
                 )
             } else {
-                if (!isUser && (message.usage != null || message.elapsedMs > 0)) {
-                    MessageMetrics(
-                        usage = message.usage,
-                        elapsedMs = message.elapsedMs,
-                        estimatedCostRub = message.estimatedCostRub,
-                        textColor = textColor
+                if (message.isLoading && message.content.isNotEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = message.content,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = textColor,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.size(4.dp))
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
+                } else {
+                    if (!isUser && (message.usage != null || message.elapsedMs > 0)) {
+                        MessageMetrics(
+                            usage = message.usage,
+                            elapsedMs = message.elapsedMs,
+                            estimatedCostRub = message.estimatedCostRub,
+                            textColor = textColor
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = textColor
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
                 }
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = textColor
-                )
+                if (message.content.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        IconButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("message", message.content))
+                                Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Копировать",
+                                tint = textColor
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -212,6 +287,61 @@ private fun MessageMetrics(
                 text = String.format(Locale.US, "💰 ~%.4f ₽", estimatedCostRub),
                 style = MaterialTheme.typography.labelSmall,
                 color = textColor
+            )
+        }
+    }
+}
+
+@Composable
+private fun DialogSummary(
+    lastRequestContextTokens: Int,
+    totalTokensInDialog: Int,
+    totalCostInDialog: Double,
+    contextLength: Int?
+) {
+    val nearLimit = contextLength != null && contextLength > 0 &&
+        lastRequestContextTokens >= contextLength * 0.9
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = "Сводка по диалогу",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = "Контекст последнего запроса: $lastRequestContextTokens токенов",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = "Всего в диалоге: $totalTokensInDialog токенов",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = String.format(Locale.US, "Стоимость диалога: ~%.4f ₽", totalCostInDialog),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        if (contextLength != null) {
+            Text(
+                text = "Контекст: $lastRequestContextTokens / $contextLength токенов",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (nearLimit) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+            )
+        }
+        if (nearLimit) {
+            Text(
+                text = "Близко к лимиту модели. Следующий запрос может вернуть ошибку.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
             )
         }
     }

@@ -3,6 +3,9 @@ package com.aichallenge.aiagentapp.data
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import java.io.IOException
 
@@ -58,6 +61,67 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
             Result.failure(e)
         }
     }
+
+    private val gson = Gson()
+
+    fun sendMessagesStreaming(
+        messages: List<ChatMessage>,
+        modelId: String
+    ): Flow<StreamEvent> = flow {
+        if (messages.isEmpty()) return@flow
+        val request = DeepSeekRequest(
+            model = modelId,
+            messages = messages,
+            stream = true
+        )
+        try {
+            val response = routerAiApi.createChatCompletionStream(request)
+            if (!response.isSuccessful) {
+                val errorMsg = response.errorBody()?.string()?.let { raw ->
+                    try {
+                        Gson().fromJson(raw, ErrorBody::class.java)?.error?.message ?: raw
+                    } catch (_: Exception) {
+                        raw
+                    }
+                } ?: "Error: ${response.code()} ${response.message()}"
+                emit(StreamEvent.Error(errorMsg))
+                return@flow
+            }
+            val body = response.body() ?: run {
+                emit(StreamEvent.Error("Empty response body"))
+                return@flow
+            }
+            var usage: Usage? = null
+            body.byteStream().bufferedReader(Charsets.UTF_8).use { reader ->
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    val trimmed = line.trim()
+                    if (!trimmed.startsWith("data: ")) continue
+                    val data = trimmed.removePrefix("data: ").trim()
+                    if (data == "[DONE]") break
+                    try {
+                        val chunk = gson.fromJson(data, StreamChunk::class.java)
+                        chunk.usage?.let { usage = it }
+                        val delta = chunk.choices?.firstOrNull()?.delta ?: continue
+                        val content = delta.content
+                        // Показываем только финальный ответ (content), без reasoning («думки» модели)
+                        if (!content.isNullOrEmpty()) emit(StreamEvent.Chunk(content))
+                    } catch (_: Exception) {
+                        // skip unparseable chunk
+                    }
+                }
+            }
+            emit(StreamEvent.Done(usage))
+        } catch (e: Exception) {
+            emit(StreamEvent.Error(e.message ?: "Stream error"))
+        }
+    }.flowOn(Dispatchers.IO)
+}
+
+sealed class StreamEvent {
+    data class Chunk(val text: String) : StreamEvent()
+    data class Done(val usage: Usage?) : StreamEvent()
+    data class Error(val message: String) : StreamEvent()
 }
 
 data class AgentTurnResult(

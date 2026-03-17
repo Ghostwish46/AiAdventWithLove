@@ -4,6 +4,9 @@ import com.aichallenge.aiagentapp.data.AgentTurnResult
 import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.DeepSeekRepository
 import com.aichallenge.aiagentapp.data.ModelInfo
+import com.aichallenge.aiagentapp.data.StreamEvent
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 class SimpleAgent(
     private val repository: DeepSeekRepository,
@@ -38,6 +41,22 @@ class SimpleAgent(
     }
 
     fun getHistory(): List<ChatMessage> = conversationHistory.toList()
+
+    fun getModelInfo(): ModelInfo = modelInfo
+
+    fun addAssistantMessage(content: String) {
+        conversationHistory.add(ChatMessage(role = "assistant", content = content))
+    }
+
+    fun processQueryStreaming(userMessage: String): Flow<StreamEvent> {
+        if (userMessage.isBlank()) return flowOf(StreamEvent.Error("Empty message"))
+        conversationHistory.add(ChatMessage(role = "user", content = userMessage.trim()))
+        val allMessages = buildList {
+            add(ChatMessage(role = "system", content = systemPrompt))
+            addAll(conversationHistory)
+        }
+        return repository.sendMessagesStreaming(allMessages, modelInfo.id)
+    }
 
     fun clearHistory() {
         conversationHistory.clear()
