@@ -3,17 +3,20 @@ package com.aichallenge.aiagentapp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichallenge.aiagentapp.agent.SimpleAgent
+import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.Conversation
 import com.aichallenge.aiagentapp.data.ConversationRepository
 import com.aichallenge.aiagentapp.data.SavedMessage
 import com.aichallenge.aiagentapp.data.Usage
 import com.aichallenge.aiagentapp.data.StreamEvent
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import java.util.UUID
 
@@ -31,8 +34,8 @@ data class ChatUiState(
     val input: String = "",
     val messages: List<UiMessage> = emptyList(),
     val isLoading: Boolean = false,
-    /** Текст, который приходит чанками во время стриминга; отображается поверх последнего сообщения */
-    val streamingContent: String = ""
+    val streamingContent: String = "",
+    val compressionEnabled: Boolean = true
 )
 
 class ChatViewModel(
@@ -45,11 +48,24 @@ class ChatViewModel(
 
     private var currentConversationId: String? = conversationId
 
-    private val _uiState = MutableStateFlow(ChatUiState(messages = initialMessages))
+    private val _uiState = MutableStateFlow(
+        ChatUiState(
+            messages = initialMessages,
+            compressionEnabled = agent.isCompressionEnabled()
+        )
+    )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     fun updateInput(text: String) {
         _uiState.value = _uiState.value.copy(input = text)
+    }
+
+    fun setCompressionEnabled(enabled: Boolean) {
+        val chatMessages = _uiState.value.messages
+            .filter { !it.isLoading }
+            .map { ChatMessage(role = it.role, content = it.content) }
+        agent.setCompressionEnabled(enabled, chatMessages)
+        _uiState.value = _uiState.value.copy(compressionEnabled = enabled)
     }
 
     fun send() {
@@ -70,6 +86,7 @@ class ChatViewModel(
             agent.processQueryStreaming(text)
                 .catch { e ->
                     clearStreamingContent()
+                    agent.rollbackLastUserMessage()
                     replaceLastMessage(
                         UiMessage(
                             role = "assistant",
@@ -82,7 +99,7 @@ class ChatViewModel(
                     when (event) {
                         is StreamEvent.Chunk -> {
                             appendStreamingContent(event.text)
-                            yield() // даём UI перерисоваться до следующего чанка
+                            yield()
                         }
                         is StreamEvent.Done -> {
                             val elapsedMs = System.currentTimeMillis() - startMs
@@ -104,9 +121,16 @@ class ChatViewModel(
                                 )
                             )
                             persistConversation()
+                            viewModelScope.launch(Dispatchers.IO) {
+                                agent.flushPendingSummarization()
+                                withContext(Dispatchers.Main) {
+                                    persistConversation()
+                                }
+                            }
                         }
                         is StreamEvent.Error -> {
                             clearStreamingContent()
+                            agent.rollbackLastUserMessage()
                             replaceLastMessage(
                                 UiMessage(
                                     role = "assistant",
@@ -132,8 +156,15 @@ class ChatViewModel(
 
     fun clearChat() {
         agent.clearHistory()
-        _uiState.value = ChatUiState()
+        _uiState.value = ChatUiState(compressionEnabled = _uiState.value.compressionEnabled)
         currentConversationId = null
+    }
+
+    fun estimateFullHistoryPromptTokens(): Int {
+        val msgs = _uiState.value.messages
+            .filter { !it.isLoading && !it.isError }
+            .map { ChatMessage(it.role, it.content) }
+        return agent.estimatePromptTokensIfFullHistory(msgs)
     }
 
     private fun persistConversation() {
@@ -159,7 +190,8 @@ class ChatViewModel(
             id = id,
             title = title,
             messages = savedMessages,
-            updatedAtMillis = System.currentTimeMillis()
+            updatedAtMillis = System.currentTimeMillis(),
+            rollingSummary = agent.getRollingSummary().ifBlank { null }
         )
         conversationRepository.save(conversation)
     }

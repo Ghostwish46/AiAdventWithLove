@@ -62,6 +62,47 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
         }
     }
 
+    /**
+     * Сжатие фрагмента диалога в сухие факты (минимум токенов в ответе).
+     */
+    suspend fun summarizeDialogFragment(
+        messages: List<ChatMessage>,
+        modelId: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        if (messages.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Empty batch"))
+        val dialogue = messages.joinToString("\n") { m ->
+            val label = if (m.role == "user") "П" else "А"
+            "$label: ${m.content}"
+        }
+        val system = (
+            "Сожми диалог в сухие факты для памяти ассистента. " +
+                "Обязательно сохрани: кодовые слова, просьбы «запомни», имена, даты, договорённости. " +
+                "Маркированный список или плотный текст. Без вступлений и воды. Не более 10 пунктов или 150 слов."
+            )
+        val request = DeepSeekRequest(
+            model = modelId,
+            messages = listOf(
+                ChatMessage(role = "system", content = system),
+                ChatMessage(role = "user", content = dialogue)
+            ),
+            stream = false,
+            maxTokens = 256
+        )
+        try {
+            val response = routerAiApi.createChatCompletion(request)
+            if (response.isSuccessful) {
+                val text = response.body()?.choices?.firstOrNull()?.message?.content?.trim()
+                if (!text.isNullOrEmpty()) Result.success(text)
+                else Result.failure(Exception("Empty summary"))
+            } else {
+                val err = response.errorBody()?.string() ?: response.message()
+                Result.failure(Exception(err))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     private val gson = Gson()
 
     fun sendMessagesStreaming(

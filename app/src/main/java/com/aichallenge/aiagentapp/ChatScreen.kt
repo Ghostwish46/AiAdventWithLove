@@ -34,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -87,6 +88,20 @@ fun ChatScreen(
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f)
             )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "Сжатие",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Switch(
+                    checked = state.compressionEnabled,
+                    onCheckedChange = { viewModel.setCompressionEnabled(it) }
+                )
+            }
             if (navController != null) {
                 IconButton(onClick = { navController.navigate("home") }) {
                     Icon(
@@ -115,7 +130,9 @@ fun ChatScreen(
                 lastRequestContextTokens = lastRequestContextTokens,
                 totalTokensInDialog = totalTokensInDialog,
                 totalCostInDialog = totalCostInDialog,
-                contextLength = contextLength
+                contextLength = contextLength,
+                compressionEnabled = state.compressionEnabled,
+                estimatedFullHistoryTokens = viewModel.estimateFullHistoryPromptTokens()
             )
         }
 
@@ -297,7 +314,9 @@ private fun DialogSummary(
     lastRequestContextTokens: Int,
     totalTokensInDialog: Int,
     totalCostInDialog: Double,
-    contextLength: Int?
+    contextLength: Int?,
+    compressionEnabled: Boolean,
+    estimatedFullHistoryTokens: Int
 ) {
     val nearLimit = contextLength != null && contextLength > 0 &&
         lastRequestContextTokens >= contextLength * 0.9
@@ -320,6 +339,28 @@ private fun DialogSummary(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface
         )
+        if (compressionEnabled && estimatedFullHistoryTokens > 0) {
+            Text(
+                text = "≈ без сжатия в промпте было бы: $estimatedFullHistoryTokens ток.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            if (lastRequestContextTokens > 0 && estimatedFullHistoryTokens > lastRequestContextTokens) {
+                val saved = estimatedFullHistoryTokens - lastRequestContextTokens
+                Text(
+                    text = "Оценка экономии в последнем запросе: ~$saved ток.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (!compressionEnabled) {
+            Text(
+                text = "Сжатие выкл. — в API уходит полная история.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         Text(
             text = "Всего в диалоге: $totalTokensInDialog токенов",
             style = MaterialTheme.typography.bodySmall,

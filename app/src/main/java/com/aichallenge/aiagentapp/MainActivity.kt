@@ -73,7 +73,9 @@ class MainActivity : ComponentActivity() {
                                             repository = deepSeekRepository,
                                             modelInfo = modelInfo,
                                             systemPrompt = systemPrompt,
-                                            initialHistory = initialHistory
+                                            initialHistory = initialHistory,
+                                            initialRollingSummary = conv?.rollingSummary,
+                                            compressionEnabled = true
                                         )
                                         val initialMessages = savedMessages.map { sm ->
                                             UiMessage(
