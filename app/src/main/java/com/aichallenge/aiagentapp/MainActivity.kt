@@ -16,6 +16,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.data.ConversationRepository
 import com.aichallenge.aiagentapp.data.DeepSeekRepository
@@ -69,13 +70,13 @@ class MainActivity : ComponentActivity() {
                                         val conv = if (conversationId == "new") null else conversationRepository.getById(conversationId)
                                         val savedMessages = conv?.messages ?: emptyList()
                                         val initialHistory = savedMessages.map { it.toChatMessage() }
+                                        val savedStrategy = ContextStrategy.fromSavedName(conv?.contextStrategy)
                                         val agent = SimpleAgent(
                                             repository = deepSeekRepository,
                                             modelInfo = modelInfo,
                                             systemPrompt = systemPrompt,
                                             initialHistory = initialHistory,
-                                            initialRollingSummary = conv?.rollingSummary,
-                                            compressionEnabled = true
+                                            initialContextStrategy = savedStrategy
                                         )
                                         val initialMessages = savedMessages.map { sm ->
                                             UiMessage(

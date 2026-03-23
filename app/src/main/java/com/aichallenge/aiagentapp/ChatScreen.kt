@@ -34,7 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,6 +47,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.aichallenge.aiagentapp.agent.ContextStrategy
+import com.aichallenge.aiagentapp.agent.SimpleAgent
 import java.util.Locale
 
 @Composable
@@ -90,16 +92,17 @@ fun ChatScreen(
             )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Text(
-                    text = "Сжатие",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                FilterChip(
+                    selected = state.contextStrategy == ContextStrategy.FULL,
+                    onClick = { viewModel.setContextStrategy(ContextStrategy.FULL) },
+                    label = { Text("Полная", style = MaterialTheme.typography.labelSmall) }
                 )
-                Switch(
-                    checked = state.compressionEnabled,
-                    onCheckedChange = { viewModel.setCompressionEnabled(it) }
+                FilterChip(
+                    selected = state.contextStrategy == ContextStrategy.SLIDING_WINDOW,
+                    onClick = { viewModel.setContextStrategy(ContextStrategy.SLIDING_WINDOW) },
+                    label = { Text("Окно ${SimpleAgent.KEEP_LAST_MESSAGES}", style = MaterialTheme.typography.labelSmall) }
                 )
             }
             if (navController != null) {
@@ -131,7 +134,8 @@ fun ChatScreen(
                 totalTokensInDialog = totalTokensInDialog,
                 totalCostInDialog = totalCostInDialog,
                 contextLength = contextLength,
-                compressionEnabled = state.compressionEnabled,
+                contextStrategy = state.contextStrategy,
+                keepLastMessages = SimpleAgent.KEEP_LAST_MESSAGES,
                 estimatedFullHistoryTokens = viewModel.estimateFullHistoryPromptTokens()
             )
         }
@@ -315,7 +319,8 @@ private fun DialogSummary(
     totalTokensInDialog: Int,
     totalCostInDialog: Double,
     contextLength: Int?,
-    compressionEnabled: Boolean,
+    contextStrategy: ContextStrategy,
+    keepLastMessages: Int,
     estimatedFullHistoryTokens: Int
 ) {
     val nearLimit = contextLength != null && contextLength > 0 &&
@@ -335,28 +340,36 @@ private fun DialogSummary(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(
+            text = when (contextStrategy) {
+                ContextStrategy.FULL -> "Стратегия: полная история в промпте"
+                ContextStrategy.SLIDING_WINDOW -> "Стратегия: окно последних $keepLastMessages сообщений"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
             text = "Контекст последнего запроса: $lastRequestContextTokens токенов",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface
         )
-        if (compressionEnabled && estimatedFullHistoryTokens > 0) {
+        if (contextStrategy == ContextStrategy.SLIDING_WINDOW && estimatedFullHistoryTokens > 0) {
             Text(
-                text = "≈ без сжатия в промпте было бы: $estimatedFullHistoryTokens ток.",
+                text = "≈ при FULL в промпте было бы: $estimatedFullHistoryTokens ток.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary
             )
             if (lastRequestContextTokens > 0 && estimatedFullHistoryTokens > lastRequestContextTokens) {
                 val saved = estimatedFullHistoryTokens - lastRequestContextTokens
                 Text(
-                    text = "Оценка экономии в последнем запросе: ~$saved ток.",
+                    text = "Оценка экономии vs FULL: ~$saved ток.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
-        if (!compressionEnabled) {
+        if (contextStrategy == ContextStrategy.FULL) {
             Text(
-                text = "Сжатие выкл. — в API уходит полная история.",
+                text = "В API уходит вся лента чата (как на экране).",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

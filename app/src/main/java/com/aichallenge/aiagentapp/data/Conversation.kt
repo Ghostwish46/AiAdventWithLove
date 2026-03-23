@@ -5,6 +5,8 @@ data class Conversation(
     val title: String,
     val messages: List<SavedMessage>,
     val updatedAtMillis: Long,
-    /** Сжатая сводка старых реплик для запросов к API; экран хранит полные messages */
+    /** FULL | SLIDING_WINDOW (фаза 1) */
+    val contextStrategy: String? = null,
+    /** Устарело для фазы 1; не используется в промпте при FULL/SLIDING. */
     val rollingSummary: String? = null
 )

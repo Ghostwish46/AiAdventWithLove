@@ -2,6 +2,7 @@ package com.aichallenge.aiagentapp
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.Conversation
@@ -9,14 +10,12 @@ import com.aichallenge.aiagentapp.data.ConversationRepository
 import com.aichallenge.aiagentapp.data.SavedMessage
 import com.aichallenge.aiagentapp.data.Usage
 import com.aichallenge.aiagentapp.data.StreamEvent
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import java.util.UUID
 
@@ -35,7 +34,7 @@ data class ChatUiState(
     val messages: List<UiMessage> = emptyList(),
     val isLoading: Boolean = false,
     val streamingContent: String = "",
-    val compressionEnabled: Boolean = true
+    val contextStrategy: ContextStrategy = ContextStrategy.SLIDING_WINDOW
 )
 
 class ChatViewModel(
@@ -51,7 +50,7 @@ class ChatViewModel(
     private val _uiState = MutableStateFlow(
         ChatUiState(
             messages = initialMessages,
-            compressionEnabled = agent.isCompressionEnabled()
+            contextStrategy = agent.getContextStrategy()
         )
     )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -60,12 +59,12 @@ class ChatViewModel(
         _uiState.value = _uiState.value.copy(input = text)
     }
 
-    fun setCompressionEnabled(enabled: Boolean) {
+    fun setContextStrategy(strategy: ContextStrategy) {
         val chatMessages = _uiState.value.messages
             .filter { !it.isLoading }
             .map { ChatMessage(role = it.role, content = it.content) }
-        agent.setCompressionEnabled(enabled, chatMessages)
-        _uiState.value = _uiState.value.copy(compressionEnabled = enabled)
+        agent.setContextStrategy(strategy, chatMessages)
+        _uiState.value = _uiState.value.copy(contextStrategy = strategy)
     }
 
     fun send() {
@@ -121,12 +120,6 @@ class ChatViewModel(
                                 )
                             )
                             persistConversation()
-                            viewModelScope.launch(Dispatchers.IO) {
-                                agent.flushPendingSummarization()
-                                withContext(Dispatchers.Main) {
-                                    persistConversation()
-                                }
-                            }
                         }
                         is StreamEvent.Error -> {
                             clearStreamingContent()
@@ -156,7 +149,7 @@ class ChatViewModel(
 
     fun clearChat() {
         agent.clearHistory()
-        _uiState.value = ChatUiState(compressionEnabled = _uiState.value.compressionEnabled)
+        _uiState.value = ChatUiState(contextStrategy = _uiState.value.contextStrategy)
         currentConversationId = null
     }
 
@@ -191,7 +184,8 @@ class ChatViewModel(
             title = title,
             messages = savedMessages,
             updatedAtMillis = System.currentTimeMillis(),
-            rollingSummary = agent.getRollingSummary().ifBlank { null }
+            contextStrategy = agent.getContextStrategy().name,
+            rollingSummary = null
         )
         conversationRepository.save(conversation)
     }
