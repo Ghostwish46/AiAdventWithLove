@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -85,25 +87,34 @@ fun ChatScreen(
                     )
                 }
             }
-            Text(
-                text = "AI Agent",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.weight(1f)
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                FilterChip(
-                    selected = state.contextStrategy == ContextStrategy.FULL,
-                    onClick = { viewModel.setContextStrategy(ContextStrategy.FULL) },
-                    label = { Text("Полная", style = MaterialTheme.typography.labelSmall) }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AI Agent",
+                    style = MaterialTheme.typography.titleLarge
                 )
-                FilterChip(
-                    selected = state.contextStrategy == ContextStrategy.SLIDING_WINDOW,
-                    onClick = { viewModel.setContextStrategy(ContextStrategy.SLIDING_WINDOW) },
-                    label = { Text("Окно ${SimpleAgent.KEEP_LAST_MESSAGES}", style = MaterialTheme.typography.labelSmall) }
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FilterChip(
+                        selected = state.contextStrategy == ContextStrategy.FULL,
+                        onClick = { viewModel.setContextStrategy(ContextStrategy.FULL) },
+                        label = { Text("Полная", style = MaterialTheme.typography.labelSmall) }
+                    )
+                    FilterChip(
+                        selected = state.contextStrategy == ContextStrategy.SLIDING_WINDOW,
+                        onClick = { viewModel.setContextStrategy(ContextStrategy.SLIDING_WINDOW) },
+                        label = { Text("Окно ${SimpleAgent.KEEP_LAST_MESSAGES}", style = MaterialTheme.typography.labelSmall) }
+                    )
+                    FilterChip(
+                        selected = state.contextStrategy == ContextStrategy.FACTS_KV,
+                        onClick = { viewModel.setContextStrategy(ContextStrategy.FACTS_KV) },
+                        label = { Text("Факты", style = MaterialTheme.typography.labelSmall) }
+                    )
+                }
             }
             if (navController != null) {
                 IconButton(onClick = { navController.navigate("home") }) {
@@ -136,7 +147,8 @@ fun ChatScreen(
                 contextLength = contextLength,
                 contextStrategy = state.contextStrategy,
                 keepLastMessages = SimpleAgent.KEEP_LAST_MESSAGES,
-                estimatedFullHistoryTokens = viewModel.estimateFullHistoryPromptTokens()
+                estimatedFullHistoryTokens = viewModel.estimateFullHistoryPromptTokens(),
+                stickyFactsSummary = state.stickyFactsSummary
             )
         }
 
@@ -321,7 +333,8 @@ private fun DialogSummary(
     contextLength: Int?,
     contextStrategy: ContextStrategy,
     keepLastMessages: Int,
-    estimatedFullHistoryTokens: Int
+    estimatedFullHistoryTokens: Int,
+    stickyFactsSummary: String
 ) {
     val nearLimit = contextLength != null && contextLength > 0 &&
         lastRequestContextTokens >= contextLength * 0.9
@@ -343,16 +356,33 @@ private fun DialogSummary(
             text = when (contextStrategy) {
                 ContextStrategy.FULL -> "Стратегия: полная история в промпте"
                 ContextStrategy.SLIDING_WINDOW -> "Стратегия: окно последних $keepLastMessages сообщений"
+                ContextStrategy.FACTS_KV ->
+                    "Стратегия: зафиксированные факты + окно последних $keepLastMessages сообщений"
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary
         )
+        if (contextStrategy == ContextStrategy.FACTS_KV) {
+            val preview = if (stickyFactsSummary.isBlank()) {
+                "Факты пока пусты (появятся после ответа модели на ваши реплики)."
+            } else {
+                stickyFactsSummary.take(500) + if (stickyFactsSummary.length > 500) "…" else ""
+            }
+            Text(
+                text = "Факты: $preview",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         Text(
             text = "Контекст последнего запроса: $lastRequestContextTokens токенов",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface
         )
-        if (contextStrategy == ContextStrategy.SLIDING_WINDOW && estimatedFullHistoryTokens > 0) {
+        if (
+            (contextStrategy == ContextStrategy.SLIDING_WINDOW || contextStrategy == ContextStrategy.FACTS_KV) &&
+            estimatedFullHistoryTokens > 0
+        ) {
             Text(
                 text = "≈ при FULL в промпте было бы: $estimatedFullHistoryTokens ток.",
                 style = MaterialTheme.typography.bodySmall,
@@ -370,6 +400,13 @@ private fun DialogSummary(
         if (contextStrategy == ContextStrategy.FULL) {
             Text(
                 text = "В API уходит вся лента чата (как на экране).",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (contextStrategy == ContextStrategy.FACTS_KV) {
+            Text(
+                text = "В API: системный промпт с блоком фактов + последние реплики; лента на экране полная.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

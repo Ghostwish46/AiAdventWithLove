@@ -13,10 +13,11 @@ class SimpleAgent(
     private val modelInfo: ModelInfo,
     private val systemPrompt: String = "Ты полезный AI-ассистент. Отвечай чётко и по делу.",
     initialHistory: List<ChatMessage> = emptyList(),
-    initialContextStrategy: ContextStrategy = ContextStrategy.SLIDING_WINDOW
+    initialContextStrategy: ContextStrategy = ContextStrategy.SLIDING_WINDOW,
+    initialStickyFacts: Map<String, String> = emptyMap()
 ) {
     companion object {
-        /** Сколько последних реплик (user+assistant) уходит в API при [ContextStrategy.SLIDING_WINDOW]. */
+        /** Сколько последних реплик (user+assistant) уходит в API при SLIDING_WINDOW и FACTS_KV. */
         const val KEEP_LAST_MESSAGES = 8
     }
 
@@ -25,13 +26,16 @@ class SimpleAgent(
     /** Полная история для [ContextStrategy.FULL]. */
     private val fullHistory = mutableListOf<ChatMessage>()
 
-    /** Скользящее окно для [ContextStrategy.SLIDING_WINDOW] (без summary). */
+    /** Скользящее окно для SLIDING_WINDOW и FACTS_KV. */
     private val windowForApi = mutableListOf<ChatMessage>()
+
+    /** Sticky facts для [ContextStrategy.FACTS_KV]. */
+    private val stickyFacts = LinkedHashMap<String, String>().apply { putAll(initialStickyFacts) }
 
     init {
         when (contextStrategyInternal) {
             ContextStrategy.FULL -> fullHistory.addAll(initialHistory)
-            ContextStrategy.SLIDING_WINDOW -> {
+            ContextStrategy.SLIDING_WINDOW, ContextStrategy.FACTS_KV -> {
                 if (initialHistory.size > KEEP_LAST_MESSAGES) {
                     windowForApi.addAll(initialHistory.takeLast(KEEP_LAST_MESSAGES))
                 } else {
@@ -47,9 +51,10 @@ class SimpleAgent(
         contextStrategyInternal = strategy
         fullHistory.clear()
         windowForApi.clear()
+        stickyFacts.clear()
         when (strategy) {
             ContextStrategy.FULL -> fullHistory.addAll(fullMessagesFromUi)
-            ContextStrategy.SLIDING_WINDOW -> {
+            ContextStrategy.SLIDING_WINDOW, ContextStrategy.FACTS_KV -> {
                 if (fullMessagesFromUi.size > KEEP_LAST_MESSAGES) {
                     windowForApi.addAll(fullMessagesFromUi.takeLast(KEEP_LAST_MESSAGES))
                 } else {
@@ -61,6 +66,31 @@ class SimpleAgent(
 
     /** Фаза 1: сводка не используется; для совместимости persist — всегда пусто. */
     fun getRollingSummary(): String = ""
+
+    fun getStickyFactsMap(): Map<String, String> = stickyFacts.toMap()
+
+    fun getStickyFactsDisplay(): String =
+        if (stickyFacts.isEmpty()) ""
+        else stickyFacts.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+
+    /**
+     * Обновляет sticky facts перед добавлением сообщения пользователя в историю API.
+     * При ошибке парсинга/сети прежние факты сохраняются.
+     */
+    suspend fun mergeStickyFactsForUserMessage(
+        newUserMessage: String,
+        conversationSoFar: List<ChatMessage>
+    ) {
+        repository.mergeStickyFacts(
+            stickyFacts.toMap(),
+            newUserMessage,
+            conversationSoFar,
+            modelInfo.id
+        ).onSuccess { merged ->
+            stickyFacts.clear()
+            stickyFacts.putAll(merged)
+        }
+    }
 
     suspend fun processQuery(userMessage: String): Result<AgentTurnResult> {
         if (userMessage.isBlank()) {
@@ -82,7 +112,7 @@ class SimpleAgent(
     fun getHistory(): List<ChatMessage> =
         when (contextStrategyInternal) {
             ContextStrategy.FULL -> fullHistory.toList()
-            ContextStrategy.SLIDING_WINDOW -> windowForApi.toList()
+            ContextStrategy.SLIDING_WINDOW, ContextStrategy.FACTS_KV -> windowForApi.toList()
         }
 
     fun getModelInfo(): ModelInfo = modelInfo
@@ -95,7 +125,7 @@ class SimpleAgent(
         val msg = ChatMessage(role = "user", content = trimmed)
         when (contextStrategyInternal) {
             ContextStrategy.FULL -> fullHistory.add(msg)
-            ContextStrategy.SLIDING_WINDOW -> windowForApi.add(msg)
+            ContextStrategy.SLIDING_WINDOW, ContextStrategy.FACTS_KV -> windowForApi.add(msg)
         }
     }
 
@@ -103,7 +133,7 @@ class SimpleAgent(
         val msg = ChatMessage(role = "assistant", content = content)
         when (contextStrategyInternal) {
             ContextStrategy.FULL -> fullHistory.add(msg)
-            ContextStrategy.SLIDING_WINDOW -> {
+            ContextStrategy.SLIDING_WINDOW, ContextStrategy.FACTS_KV -> {
                 windowForApi.add(msg)
                 while (windowForApi.size > KEEP_LAST_MESSAGES) {
                     windowForApi.removeAt(0)
@@ -119,7 +149,7 @@ class SimpleAgent(
                     fullHistory.removeAt(fullHistory.lastIndex)
                 }
             }
-            ContextStrategy.SLIDING_WINDOW -> {
+            ContextStrategy.SLIDING_WINDOW, ContextStrategy.FACTS_KV -> {
                 if (windowForApi.isNotEmpty() && windowForApi.last().role == "user") {
                     windowForApi.removeAt(windowForApi.lastIndex)
                 }
@@ -134,11 +164,20 @@ class SimpleAgent(
     }
 
     private fun buildMessagesForApi(): List<ChatMessage> = buildList {
-        add(ChatMessage(role = "system", content = systemPrompt))
+        val systemContent = if (
+            contextStrategyInternal == ContextStrategy.FACTS_KV &&
+            stickyFacts.isNotEmpty()
+        ) {
+            val block = stickyFacts.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+            "$systemPrompt\n\nЗафиксированные факты из диалога (ключ — значение):\n$block"
+        } else {
+            systemPrompt
+        }
+        add(ChatMessage(role = "system", content = systemContent))
         addAll(
             when (contextStrategyInternal) {
                 ContextStrategy.FULL -> fullHistory
-                ContextStrategy.SLIDING_WINDOW -> windowForApi
+                ContextStrategy.SLIDING_WINDOW, ContextStrategy.FACTS_KV -> windowForApi
             }
         )
     }
@@ -154,5 +193,6 @@ class SimpleAgent(
     fun clearHistory() {
         fullHistory.clear()
         windowForApi.clear()
+        stickyFacts.clear()
     }
 }

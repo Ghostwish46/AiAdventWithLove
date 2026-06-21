@@ -3,11 +3,18 @@
 /local.properties
 /.idea
 .DS_Store
-/build
+
+# Build outputs — все модули (app, shared, androidApp, desktopApp)
+**/build/
+
 /captures
 .externalNativeBuild
 .cxx
-app/build
+
+# Kotlin / KMP
+.kotlin/
+
 *.keystore
+*.jks
 *.apk
 *.aab

@@ -14,4 +14,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "AiAgentApp"
-include(":app")
+include(":shared")
+include(":androidApp")
+include(":desktopApp")

@@ -1,37 +1,72 @@
 # Ai Agent App
 
-Android-приложение для отправки запросов в DeepSeek API и отображения ответов нейросети.
+Kotlin Multiplatform чат с AI: **Android** и **Desktop (Mac)** из одной кодовой базы.
 
 ## Требования
 
-- Android Studio Ladybug (2024.2.1) или новее (или AGP 8.2 + Kotlin 1.9)
+- Android Studio Ladybug (2024.2.1) или новее
 - JDK 17
-- minSdk 24
+- minSdk 24 (Android)
 
-## API-ключ (вариант B)
+## Структура модулей
 
-1. Получите API-ключ на [platform.deepseek.com](https://platform.deepseek.com/api_keys).
-2. В корне проекта создайте или отредактируйте файл `local.properties` (он в `.gitignore` и не коммитится).
-3. Добавьте строку:
-   ```
-   DEEPSEEK_API_KEY=sk-ваш-ключ
-   ```
-4. Пересоберите проект.
+| Модуль | Назначение |
+|--------|------------|
+| `shared` | Общая логика, UI (Compose), API, сохранение диалогов |
+| `androidApp` | Тонкая Android-оболочка (`MainActivity`) |
+| `desktopApp` | Desktop-приложение для Mac |
 
-Пока ключа нет — в коде используется заглушка `test-key-replace-me` (запросы к API будут возвращать ошибку авторизации).
+Старый модуль `app/` больше не используется — можно удалить после проверки.
+
+## API-ключи
+
+В корне проекта в `local.properties` (не коммитится):
+
+```
+ROUTERAI_API_KEY=ваш-ключ-routerai
+DEEPSEEK_API_KEY=sk-ваш-ключ-deepseek
+```
+
+**Android:** ключи подставляются через `BuildConfig` при сборке.
+
+**Desktop:** приоритет — переменные окружения `ROUTERAI_API_KEY` / `DEEPSEEK_API_KEY`, затем `local.properties` в корне проекта. Данные чатов сохраняются в `~/.aiagentapp/conversations.json` (отдельно от Android).
 
 ## Сборка и запуск
 
-- Откройте папку проекта в Android Studio и выполните **Sync Project with Gradle Files**. Android Studio скачает Gradle и при необходимости создаст `gradle/wrapper/gradle-wrapper.jar`.
-- Соберите и запустите на эмуляторе или устройстве: **Run** (Shift+F10) или через меню **Build → Run**.
-- Из командной строки: `./gradlew installDebug` (нужен полный Gradle Wrapper — при его отсутствии сначала откройте проект в Android Studio для синхронизации).
+### Первый запуск
+
+Откройте папку `AiAgentApp` в Android Studio и выполните **Sync Project with Gradle Files**. Studio скачает Gradle и создаст `gradle/wrapper/gradle-wrapper.jar`, если его нет.
+
+### Android
+
+```bash
+./gradlew :androidApp:installDebug
+```
+
+Или **Run** на конфигурации `androidApp`.
+
+### Desktop (Mac)
+
+```bash
+./gradlew :desktopApp:run
+```
+
+Окно с тем же UI, нативная клавиатура — удобно для быстрого ввода текста без эмулятора.
+
+Сборка DMG (опционально):
+
+```bash
+./gradlew :desktopApp:packageDmg
+```
 
 ## Стек
 
-- Kotlin, Jetpack Compose, Material3
-- Retrofit + OkHttp, Gson
-- Coroutines, ViewModel
+- Kotlin Multiplatform, Compose Multiplatform, Material3
+- Retrofit + OkHttp + Gson (JVM-слой)
+- Navigation Compose (KMP), Lifecycle ViewModel (KMP)
+- Стратегии контекста: FULL, SLIDING_WINDOW, FACTS_KV
 
 ## API
 
-- [DeepSeek API](https://api-docs.deepseek.com/) — модель `deepseek-chat`, endpoint `POST https://api.deepseek.com/chat/completions`.
+- [RouterAI](https://routerai.ru/) — основной endpoint в приложении
+- [DeepSeek API](https://api-docs.deepseek.com/) — альтернативный endpoint

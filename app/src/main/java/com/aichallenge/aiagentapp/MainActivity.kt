@@ -22,6 +22,8 @@ import com.aichallenge.aiagentapp.data.ConversationRepository
 import com.aichallenge.aiagentapp.data.DeepSeekRepository
 import com.aichallenge.aiagentapp.data.ModelInfo
 import com.aichallenge.aiagentapp.data.createRouterAiApi
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,12 +73,19 @@ class MainActivity : ComponentActivity() {
                                         val savedMessages = conv?.messages ?: emptyList()
                                         val initialHistory = savedMessages.map { it.toChatMessage() }
                                         val savedStrategy = ContextStrategy.fromSavedName(conv?.contextStrategy)
+                                        val initialFacts =
+                                            if (savedStrategy == ContextStrategy.FACTS_KV) {
+                                                parseStickyFactsJson(conv?.stickyFactsJson)
+                                            } else {
+                                                emptyMap()
+                                            }
                                         val agent = SimpleAgent(
                                             repository = deepSeekRepository,
                                             modelInfo = modelInfo,
                                             systemPrompt = systemPrompt,
                                             initialHistory = initialHistory,
-                                            initialContextStrategy = savedStrategy
+                                            initialContextStrategy = savedStrategy,
+                                            initialStickyFacts = initialFacts
                                         )
                                         val initialMessages = savedMessages.map { sm ->
                                             UiMessage(
@@ -107,5 +116,15 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+}
+
+private fun parseStickyFactsJson(json: String?): Map<String, String> {
+    if (json.isNullOrBlank()) return emptyMap()
+    return try {
+        val type = object : TypeToken<Map<String, String>>() {}.type
+        Gson().fromJson<Map<String, String>>(json, type) ?: emptyMap()
+    } catch (_: Exception) {
+        emptyMap()
     }
 }

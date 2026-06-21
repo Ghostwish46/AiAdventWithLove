@@ -10,6 +10,7 @@ import com.aichallenge.aiagentapp.data.ConversationRepository
 import com.aichallenge.aiagentapp.data.SavedMessage
 import com.aichallenge.aiagentapp.data.Usage
 import com.aichallenge.aiagentapp.data.StreamEvent
+import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,7 +35,9 @@ data class ChatUiState(
     val messages: List<UiMessage> = emptyList(),
     val isLoading: Boolean = false,
     val streamingContent: String = "",
-    val contextStrategy: ContextStrategy = ContextStrategy.SLIDING_WINDOW
+    val contextStrategy: ContextStrategy = ContextStrategy.SLIDING_WINDOW,
+    /** Текст фактов для превью при FACTS_KV. */
+    val stickyFactsSummary: String = ""
 )
 
 class ChatViewModel(
@@ -47,10 +50,13 @@ class ChatViewModel(
 
     private var currentConversationId: String? = conversationId
 
+    private val gson = Gson()
+
     private val _uiState = MutableStateFlow(
         ChatUiState(
             messages = initialMessages,
-            contextStrategy = agent.getContextStrategy()
+            contextStrategy = agent.getContextStrategy(),
+            stickyFactsSummary = stickyFactsDisplayForState()
         )
     )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -59,29 +65,58 @@ class ChatViewModel(
         _uiState.value = _uiState.value.copy(input = text)
     }
 
+    private fun stickyFactsDisplayForState(): String =
+        if (agent.getContextStrategy() == ContextStrategy.FACTS_KV) {
+            agent.getStickyFactsDisplay()
+        } else {
+            ""
+        }
+
     fun setContextStrategy(strategy: ContextStrategy) {
         val chatMessages = _uiState.value.messages
             .filter { !it.isLoading }
             .map { ChatMessage(role = it.role, content = it.content) }
         agent.setContextStrategy(strategy, chatMessages)
-        _uiState.value = _uiState.value.copy(contextStrategy = strategy)
+        _uiState.value = _uiState.value.copy(
+            contextStrategy = strategy,
+            stickyFactsSummary = if (strategy == ContextStrategy.FACTS_KV) {
+                agent.getStickyFactsDisplay()
+            } else {
+                ""
+            }
+        )
     }
 
     fun send() {
         val text = _uiState.value.input.trim()
         if (text.isBlank() || _uiState.value.isLoading) return
 
-        val userMsg = UiMessage(role = "user", content = text)
-        val loadingMsg = UiMessage(role = "assistant", content = "", isLoading = true)
-
+        val strategy = _uiState.value.contextStrategy
         _uiState.value = _uiState.value.copy(
             input = "",
-            messages = _uiState.value.messages + userMsg + loadingMsg,
-            isLoading = true
+            isLoading = strategy == ContextStrategy.FACTS_KV
         )
 
-        val startMs = System.currentTimeMillis()
         viewModelScope.launch {
+            if (strategy == ContextStrategy.FACTS_KV) {
+                val prior = _uiState.value.messages
+                    .filter { !it.isLoading && !it.isError }
+                    .map { ChatMessage(role = it.role, content = it.content) }
+                agent.mergeStickyFactsForUserMessage(text, prior)
+                _uiState.value = _uiState.value.copy(
+                    stickyFactsSummary = agent.getStickyFactsDisplay()
+                )
+            }
+
+            val userMsg = UiMessage(role = "user", content = text)
+            val loadingMsg = UiMessage(role = "assistant", content = "", isLoading = true)
+
+            _uiState.value = _uiState.value.copy(
+                messages = _uiState.value.messages + userMsg + loadingMsg,
+                isLoading = true
+            )
+
+            val startMs = System.currentTimeMillis()
             agent.processQueryStreaming(text)
                 .catch { e ->
                     clearStreamingContent()
@@ -149,7 +184,10 @@ class ChatViewModel(
 
     fun clearChat() {
         agent.clearHistory()
-        _uiState.value = ChatUiState(contextStrategy = _uiState.value.contextStrategy)
+        _uiState.value = ChatUiState(
+            contextStrategy = _uiState.value.contextStrategy,
+            stickyFactsSummary = ""
+        )
         currentConversationId = null
     }
 
@@ -179,13 +217,20 @@ class ChatViewModel(
                 estimatedCostRub = m.estimatedCostRub
             )
         }
+        val stickyFactsJson =
+            if (agent.getContextStrategy() == ContextStrategy.FACTS_KV) {
+                gson.toJson(agent.getStickyFactsMap())
+            } else {
+                null
+            }
         val conversation = Conversation(
             id = id,
             title = title,
             messages = savedMessages,
             updatedAtMillis = System.currentTimeMillis(),
             contextStrategy = agent.getContextStrategy().name,
-            rollingSummary = null
+            rollingSummary = null,
+            stickyFactsJson = stickyFactsJson
         )
         conversationRepository.save(conversation)
     }
