@@ -20,6 +20,7 @@ import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.data.parseBranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.parseStickyFactsJson
+import com.aichallenge.aiagentapp.data.parseWorkingMemoryJson
 import kotlinx.coroutines.launch
 
 @Composable
@@ -68,7 +69,12 @@ fun App(deps: AppDependencies) {
                                 repository = deps.deepSeekRepository,
                                 modelInfo = deps.modelInfo,
                                 systemPrompt = deps.systemPrompt,
-                                initialContextStrategy = strategy
+                                initialContextStrategy = strategy,
+                                longTermMemoryStore = if (strategy == ContextStrategy.MEMORY_LAYERS) {
+                                    deps.longTermMemoryRepository
+                                } else {
+                                    null
+                                }
                             )
                             ChatViewModel(
                                 agent = agent,
@@ -116,6 +122,12 @@ fun App(deps: AppDependencies) {
                                 } else {
                                     null
                                 }
+                            val initialWorking =
+                                if (savedStrategy == ContextStrategy.MEMORY_LAYERS) {
+                                    parseWorkingMemoryJson(conv?.workingMemoryJson)
+                                } else {
+                                    com.aichallenge.aiagentapp.agent.memory.WorkingMemory()
+                                }
                             val agent = SimpleAgent(
                                 repository = deps.deepSeekRepository,
                                 modelInfo = deps.modelInfo,
@@ -123,7 +135,13 @@ fun App(deps: AppDependencies) {
                                 initialHistory = initialHistory,
                                 initialContextStrategy = savedStrategy,
                                 initialStickyFacts = initialFacts,
-                                initialBranching = agentBranching
+                                initialBranching = agentBranching,
+                                initialWorkingMemory = initialWorking,
+                                longTermMemoryStore = if (savedStrategy == ContextStrategy.MEMORY_LAYERS) {
+                                    deps.longTermMemoryRepository
+                                } else {
+                                    null
+                                }
                             )
                             val initialMessages = if (initialBranching != null) {
                                 emptyList()

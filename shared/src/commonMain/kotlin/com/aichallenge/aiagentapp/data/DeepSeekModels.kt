@@ -27,4 +27,21 @@ data class Usage(
     val promptTokens: Int = 0,
     val completionTokens: Int = 0,
     val totalTokens: Int = 0
-)
+) {
+    fun isMeaningful(): Boolean = totalTokens > 0 || promptTokens > 0 || completionTokens > 0
+}
+
+/** Грубая оценка токенов (~3 символа на токен), если API не вернул usage. */
+fun estimateTokenCount(text: String): Int =
+    if (text.isEmpty()) 0 else kotlin.math.ceil(text.length / 3.0).toInt()
+
+fun estimateUsage(promptMessages: List<ChatMessage>, completionText: String): Usage {
+    val promptText = promptMessages.joinToString("\n") { "${it.role}: ${it.content}" }
+    val promptTokens = estimateTokenCount(promptText)
+    val completionTokens = estimateTokenCount(completionText)
+    return Usage(
+        promptTokens = promptTokens,
+        completionTokens = completionTokens,
+        totalTokens = promptTokens + completionTokens
+    )
+}

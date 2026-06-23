@@ -16,10 +16,11 @@ data class SavedMessage(
 
     fun toUsage(): Usage? {
         if (promptTokens == null && completionTokens == null && totalTokens == null) return null
-        return Usage(
+        val usage = Usage(
             promptTokens = promptTokens ?: 0,
             completionTokens = completionTokens ?: 0,
             totalTokens = totalTokens ?: (promptTokens ?: 0) + (completionTokens ?: 0)
         )
+        return usage.takeIf { it.isMeaningful() }
     }
 }

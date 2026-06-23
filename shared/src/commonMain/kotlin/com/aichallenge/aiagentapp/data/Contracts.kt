@@ -13,6 +13,12 @@ data class AgentTurnResult(
     val estimatedCostRub: Double? = null
 )
 
+data class MemoryClassificationResult(
+    val working: Map<String, String> = emptyMap(),
+    val longTerm: Map<String, String> = emptyMap(),
+    val routingLog: List<String> = emptyList()
+)
+
 interface LlmClient {
     suspend fun sendMessages(messages: List<ChatMessage>, modelId: String): Result<AgentTurnResult>
     fun sendMessagesStreaming(messages: List<ChatMessage>, modelId: String): kotlinx.coroutines.flow.Flow<StreamEvent>
@@ -22,6 +28,14 @@ interface LlmClient {
         recentContext: List<ChatMessage>,
         modelId: String
     ): Result<Map<String, String>>
+    suspend fun classifyMemoryUpdate(
+        existingWorking: Map<String, String>,
+        existingLongTerm: Map<String, String>,
+        newUserMessage: String,
+        recentContext: List<ChatMessage>,
+        forceLongTerm: Boolean,
+        modelId: String
+    ): Result<MemoryClassificationResult>
 }
 
 interface ConversationStore {

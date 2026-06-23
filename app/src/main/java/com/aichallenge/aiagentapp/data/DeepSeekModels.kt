@@ -35,7 +35,12 @@ data class DeepSeekRequest(
     val temperature: Double? = null,
     @SerializedName("max_tokens") val maxTokens: Int? = null,
     val stop: List<String>? = null,
-    @SerializedName("response_format") val responseFormat: ResponseFormat? = null
+    @SerializedName("response_format") val responseFormat: ResponseFormat? = null,
+    @SerializedName("stream_options") val streamOptions: StreamOptions? = null
+)
+
+data class StreamOptions(
+    @SerializedName("include_usage") val includeUsage: Boolean = true
 )
 
 data class ChatMessage(
@@ -70,8 +75,51 @@ data class Message(
 data class Usage(
     @SerializedName("prompt_tokens") val promptTokens: Int = 0,
     @SerializedName("completion_tokens") val completionTokens: Int = 0,
-    @SerializedName("total_tokens") val totalTokens: Int = 0
-)
+    @SerializedName("total_tokens") val totalTokens: Int = 0,
+    @SerializedName("input_tokens") val inputTokens: Int = 0,
+    @SerializedName("output_tokens") val outputTokens: Int = 0
+) {
+    fun normalized(): Usage {
+        val prompt = when {
+            promptTokens > 0 -> promptTokens
+            inputTokens > 0 -> inputTokens
+            else -> 0
+        }
+        val completion = when {
+            completionTokens > 0 -> completionTokens
+            outputTokens > 0 -> outputTokens
+            else -> 0
+        }
+        val total = when {
+            totalTokens > 0 -> totalTokens
+            prompt + completion > 0 -> prompt + completion
+            else -> 0
+        }
+        return copy(
+            promptTokens = prompt,
+            completionTokens = completion,
+            totalTokens = total,
+            inputTokens = 0,
+            outputTokens = 0
+        )
+    }
+
+    fun isMeaningful(): Boolean = totalTokens > 0 || promptTokens > 0 || completionTokens > 0
+}
+
+fun estimateTokenCount(text: String): Int =
+    if (text.isEmpty()) 0 else kotlin.math.ceil(text.length / 3.0).toInt()
+
+fun estimateUsage(promptMessages: List<ChatMessage>, completionText: String): Usage {
+    val promptText = promptMessages.joinToString("\n") { "${it.role}: ${it.content}" }
+    val promptTokens = estimateTokenCount(promptText)
+    val completionTokens = estimateTokenCount(completionText)
+    return Usage(
+        promptTokens = promptTokens,
+        completionTokens = completionTokens,
+        totalTokens = promptTokens + completionTokens
+    )
+}
 
 // --- Streaming (SSE) ---
 

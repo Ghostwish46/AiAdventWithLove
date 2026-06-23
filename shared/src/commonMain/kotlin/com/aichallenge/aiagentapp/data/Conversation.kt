@@ -11,5 +11,7 @@ data class Conversation(
     val rollingSummary: String? = null,
     val stickyFactsJson: String? = null,
     /** JSON snapshot веток для BRANCHING. */
-    val branchingJson: String? = null
+    val branchingJson: String? = null,
+    /** Рабочая память для MEMORY_LAYERS (per-chat). */
+    val workingMemoryJson: String? = null
 )

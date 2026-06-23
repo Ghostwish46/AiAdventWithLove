@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
+import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
 import com.aichallenge.aiagentapp.data.BranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.Conversation
@@ -13,6 +14,7 @@ import com.aichallenge.aiagentapp.data.StreamEvent
 import com.aichallenge.aiagentapp.data.Usage
 import com.aichallenge.aiagentapp.data.encodeBranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.encodeStickyFactsJson
+import com.aichallenge.aiagentapp.data.encodeWorkingMemoryJson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,7 +47,9 @@ data class ChatUiState(
     val isBranched: Boolean = false,
     val activeBranchId: String? = null,
     val branches: List<BranchOption> = emptyList(),
-    val canCreateCheckpoint: Boolean = false
+    val canCreateCheckpoint: Boolean = false,
+    val memorySnapshot: MemorySnapshot? = null,
+    val lastRoutingLog: List<String> = emptyList()
 )
 
 class ChatViewModel(
@@ -92,9 +96,18 @@ class ChatViewModel(
             isBranched = branched,
             activeBranchId = initialBranching?.activeBranchId ?: agent.getBranchingState()?.activeBranchId,
             branches = branchOptions(),
-            canCreateCheckpoint = canCreateCheckpoint(messages, branched)
+            canCreateCheckpoint = canCreateCheckpoint(messages, branched),
+            memorySnapshot = memorySnapshotForState(),
+            lastRoutingLog = agent.getMemorySnapshot()?.routingLog ?: emptyList()
         )
     }
+
+    private fun memorySnapshotForState(): MemorySnapshot? =
+        if (agent.getContextStrategy() == ContextStrategy.MEMORY_LAYERS) {
+            agent.getMemorySnapshot()
+        } else {
+            null
+        }
 
     fun updateInput(text: String) {
         _uiState.value = _uiState.value.copy(input = text)
@@ -153,14 +166,24 @@ class ChatViewModel(
         persistConversation()
     }
 
+    fun pinToLongTerm(messageContent: String) {
+        if (agent.getContextStrategy() != ContextStrategy.MEMORY_LAYERS) return
+        val log = agent.pinMessageToLongTerm(messageContent)
+        _uiState.value = _uiState.value.copy(
+            memorySnapshot = agent.getMemorySnapshot(),
+            lastRoutingLog = log
+        )
+    }
+
     fun send() {
         val text = _uiState.value.input.trim()
         if (text.isBlank() || _uiState.value.isLoading) return
 
         val strategy = _uiState.value.contextStrategy
+        val needsPreTurnMemory = strategy == ContextStrategy.FACTS_KV || strategy == ContextStrategy.MEMORY_LAYERS
         _uiState.value = _uiState.value.copy(
             input = "",
-            isLoading = strategy == ContextStrategy.FACTS_KV
+            isLoading = needsPreTurnMemory
         )
 
         viewModelScope.launch {
@@ -169,6 +192,14 @@ class ChatViewModel(
                 agent.mergeStickyFactsForUserMessage(text, prior)
                 _uiState.value = _uiState.value.copy(
                     stickyFactsSummary = agent.getStickyFactsDisplay()
+                )
+            }
+            if (strategy == ContextStrategy.MEMORY_LAYERS) {
+                val prior = conversationChatMessages()
+                val routingLog = agent.updateMemoryForUserMessage(text, prior)
+                _uiState.value = _uiState.value.copy(
+                    memorySnapshot = agent.getMemorySnapshot(),
+                    lastRoutingLog = routingLog
                 )
             }
 
@@ -219,6 +250,11 @@ class ChatViewModel(
                                 )
                             )
                             syncBranchCacheFromDisplay()
+                            if (strategy == ContextStrategy.MEMORY_LAYERS) {
+                                _uiState.value = _uiState.value.copy(
+                                    memorySnapshot = agent.getMemorySnapshot()
+                                )
+                            }
                             persistConversation()
                         }
                         is StreamEvent.Error -> {
@@ -267,7 +303,8 @@ class ChatViewModel(
             contextStrategy = _uiState.value.contextStrategy,
             stickyFactsSummary = "",
             branches = branchOptions(),
-            canCreateCheckpoint = false
+            canCreateCheckpoint = false,
+            memorySnapshot = memorySnapshotForState()
         )
         currentConversationId = null
     }
@@ -316,6 +353,12 @@ class ChatViewModel(
             } else {
                 null
             }
+        val workingMemoryJson =
+            if (strategy == ContextStrategy.MEMORY_LAYERS) {
+                encodeWorkingMemoryJson(agent.getWorkingMemory())
+            } else {
+                null
+            }
         val conversation = Conversation(
             id = id,
             title = title,
@@ -324,7 +367,8 @@ class ChatViewModel(
             contextStrategy = strategy.name,
             rollingSummary = null,
             stickyFactsJson = stickyFactsJson,
-            branchingJson = branchingJson
+            branchingJson = branchingJson,
+            workingMemoryJson = workingMemoryJson
         )
         conversationRepository.save(conversation)
     }

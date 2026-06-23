@@ -2,6 +2,7 @@ package com.aichallenge.aiagentapp
 
 import com.aichallenge.aiagentapp.data.ConversationRepository
 import com.aichallenge.aiagentapp.data.DeepSeekRepository
+import com.aichallenge.aiagentapp.data.LongTermMemoryRepository
 import com.aichallenge.aiagentapp.data.ModelInfo
 import com.aichallenge.aiagentapp.data.createRouterAiApi
 
@@ -12,6 +13,7 @@ fun createAppDependencies(
     val api = createRouterAiApi()
     return AppDependencies(
         conversationRepository = ConversationRepository(),
+        longTermMemoryRepository = LongTermMemoryRepository(),
         deepSeekRepository = DeepSeekRepository(api),
         modelInfo = modelInfo,
         systemPrompt = systemPrompt

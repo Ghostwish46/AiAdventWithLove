@@ -108,6 +108,9 @@ private fun StrategyOption(
             "Блок фактов (ключ–значение) + последние ${SimpleAgent.KEEP_LAST_MESSAGES} сообщений."
         ContextStrategy.BRANCHING ->
             "Checkpoint и две независимые ветки A/B от точки разветвления."
+        ContextStrategy.MEMORY_LAYERS ->
+            "3 слоя памяти: краткосрочная (окно ${SimpleAgent.KEEP_LAST_MESSAGES} реплик), " +
+                "рабочая (задача), долговременная (профиль между сессиями)."
     }
     RowSelectable(
         selected = selected,

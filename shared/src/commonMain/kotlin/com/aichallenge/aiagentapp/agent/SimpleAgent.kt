@@ -1,8 +1,14 @@
 package com.aichallenge.aiagentapp.agent
 
+import com.aichallenge.aiagentapp.agent.memory.AgentMemory
+import com.aichallenge.aiagentapp.agent.memory.MemoryPromptBuilder
+import com.aichallenge.aiagentapp.agent.memory.MemoryRouter
+import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
+import com.aichallenge.aiagentapp.agent.memory.WorkingMemory
 import com.aichallenge.aiagentapp.data.AgentTurnResult
 import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.LlmClient
+import com.aichallenge.aiagentapp.data.LongTermMemoryStore
 import com.aichallenge.aiagentapp.data.ModelInfo
 import com.aichallenge.aiagentapp.data.StreamEvent
 import kotlinx.coroutines.flow.Flow
@@ -15,7 +21,9 @@ class SimpleAgent(
     initialHistory: List<ChatMessage> = emptyList(),
     initialContextStrategy: ContextStrategy = ContextStrategy.SLIDING_WINDOW,
     initialStickyFacts: Map<String, String> = emptyMap(),
-    initialBranching: BranchingState? = null
+    initialBranching: BranchingState? = null,
+    initialWorkingMemory: WorkingMemory = WorkingMemory(),
+    private val longTermMemoryStore: LongTermMemoryStore? = null
 ) {
     companion object {
         const val KEEP_LAST_MESSAGES = 8
@@ -23,7 +31,7 @@ class SimpleAgent(
 
     private val contextStrategyInternal = initialContextStrategy
 
-    /** Линейная лента до checkpoint (или вся лента для SLIDING/FACTS). */
+    /** Линейная лента до checkpoint (или вся лента для SLIDING/FACTS/MEMORY). */
     private val linearMessages = mutableListOf<ChatMessage>()
 
     /** Окно API для SLIDING / FACTS (до ветвления у BRANCHING — то же). */
@@ -32,6 +40,18 @@ class SimpleAgent(
     private val stickyFacts = LinkedHashMap<String, String>().apply { putAll(initialStickyFacts) }
 
     private var branchingState: BranchingState? = initialBranching
+
+    private val agentMemory: AgentMemory? =
+        if (contextStrategyInternal == ContextStrategy.MEMORY_LAYERS) {
+            AgentMemory(
+                maxShortTermMessages = KEEP_LAST_MESSAGES,
+                initialWorking = initialWorkingMemory,
+                initialLongTerm = longTermMemoryStore?.load() ?: com.aichallenge.aiagentapp.agent.memory.LongTermMemory(),
+                initialHistory = initialHistory
+            )
+        } else {
+            null
+        }
 
     init {
         when (contextStrategyInternal) {
@@ -47,6 +67,9 @@ class SimpleAgent(
                 linearMessages.addAll(initialHistory)
                 syncWindowFromLinear()
             }
+            ContextStrategy.MEMORY_LAYERS -> {
+                linearMessages.addAll(initialHistory)
+            }
         }
     }
 
@@ -58,6 +81,10 @@ class SimpleAgent(
 
     fun getStickyFactsDisplay(): String =
         if (stickyFacts.isEmpty()) "" else stickyFacts.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+
+    fun getWorkingMemory(): WorkingMemory = agentMemory?.getWorkingMemory() ?: WorkingMemory()
+
+    fun getMemorySnapshot(): MemorySnapshot? = agentMemory?.snapshot()
 
     fun getBranchingState(): BranchingState? = branchingState
 
@@ -93,6 +120,42 @@ class SimpleAgent(
             stickyFacts.clear()
             stickyFacts.putAll(merged)
         }
+    }
+
+    suspend fun updateMemoryForUserMessage(
+        newUserMessage: String,
+        conversationSoFar: List<ChatMessage>
+    ): List<String> {
+        val memory = agentMemory ?: return emptyList()
+        val forceLongTerm = MemoryRouter.hasLongTermTrigger(newUserMessage)
+        val existingLongTerm = memory.getLongTermMemory()
+        val allLongTerm = existingLongTerm.profile + existingLongTerm.preferences + existingLongTerm.knowledge
+        return repository.classifyMemoryUpdate(
+            existingWorking = memory.getWorkingMemory().facts,
+            existingLongTerm = allLongTerm,
+            newUserMessage = newUserMessage,
+            recentContext = conversationSoFar,
+            forceLongTerm = forceLongTerm,
+            modelId = modelInfo.id
+        ).map { result ->
+            memory.applyClassification(result)
+        }.getOrElse { emptyList() }.also {
+            persistLongTermMemory()
+        }
+    }
+
+    fun pinMessageToLongTerm(messageContent: String): List<String> {
+        val memory = agentMemory ?: return emptyList()
+        val key = "запись_${linearMessages.count { it.role == "user" }}"
+        val log = memory.pinToLongTerm(key, messageContent.trim())
+        persistLongTermMemory()
+        return log
+    }
+
+    private fun persistLongTermMemory() {
+        val memory = agentMemory ?: return
+        val store = longTermMemoryStore ?: return
+        store.save(memory.getLongTermMemory())
     }
 
     suspend fun processQuery(userMessage: String): Result<AgentTurnResult> {
@@ -135,6 +198,10 @@ class SimpleAgent(
             contextStrategyInternal == ContextStrategy.BRANCHING -> {
                 linearMessages.add(msg)
             }
+            contextStrategyInternal == ContextStrategy.MEMORY_LAYERS -> {
+                linearMessages.add(msg)
+                agentMemory?.appendTurn(msg)
+            }
             else -> {
                 linearMessages.add(msg)
                 windowForApi.add(msg)
@@ -149,6 +216,10 @@ class SimpleAgent(
                 appendToActiveBranch(msg)
             contextStrategyInternal == ContextStrategy.BRANCHING -> {
                 linearMessages.add(msg)
+            }
+            contextStrategyInternal == ContextStrategy.MEMORY_LAYERS -> {
+                linearMessages.add(msg)
+                agentMemory?.appendTurn(msg)
             }
             else -> {
                 linearMessages.add(msg)
@@ -191,6 +262,12 @@ class SimpleAgent(
                     linearMessages.removeAt(linearMessages.lastIndex)
                 }
             }
+            contextStrategyInternal == ContextStrategy.MEMORY_LAYERS -> {
+                if (linearMessages.isNotEmpty() && linearMessages.last().role == "user") {
+                    linearMessages.removeAt(linearMessages.lastIndex)
+                }
+                agentMemory?.removeLastShortTermTurn()
+            }
             else -> {
                 if (linearMessages.isNotEmpty() && linearMessages.last().role == "user") {
                     linearMessages.removeAt(linearMessages.lastIndex)
@@ -209,14 +286,28 @@ class SimpleAgent(
     }
 
     private fun buildMessagesForApi(): List<ChatMessage> = buildList {
-        val systemContent = if (
-            contextStrategyInternal == ContextStrategy.FACTS_KV &&
-            stickyFacts.isNotEmpty()
-        ) {
-            val block = stickyFacts.entries.joinToString("\n") { "${it.key}: ${it.value}" }
-            "$systemPrompt\n\nЗафиксированные факты из диалога (ключ — значение):\n$block"
-        } else {
-            systemPrompt
+        val systemContent = when (contextStrategyInternal) {
+            ContextStrategy.FACTS_KV -> {
+                if (stickyFacts.isNotEmpty()) {
+                    val block = stickyFacts.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+                    "$systemPrompt\n\nЗафиксированные факты из диалога (ключ — значение):\n$block"
+                } else {
+                    systemPrompt
+                }
+            }
+            ContextStrategy.MEMORY_LAYERS -> {
+                val memory = agentMemory
+                if (memory != null) {
+                    MemoryPromptBuilder.buildSystemPrompt(
+                        basePrompt = systemPrompt,
+                        working = memory.getWorkingMemory(),
+                        longTerm = memory.getLongTermMemory()
+                    )
+                } else {
+                    systemPrompt
+                }
+            }
+            else -> systemPrompt
         }
         add(ChatMessage(role = "system", content = systemContent))
         addAll(apiPayloadMessages())
@@ -226,6 +317,7 @@ class SimpleAgent(
         when (contextStrategyInternal) {
             ContextStrategy.SLIDING_WINDOW, ContextStrategy.FACTS_KV -> windowForApi.toList()
             ContextStrategy.BRANCHING -> branchingApiMessages()
+            ContextStrategy.MEMORY_LAYERS -> agentMemory?.shortTermMessages() ?: emptyList()
         }
 
     private fun branchingApiMessages(): List<ChatMessage> {
@@ -264,5 +356,6 @@ class SimpleAgent(
         windowForApi.clear()
         stickyFacts.clear()
         branchingState = null
+        agentMemory?.clear()
     }
 }

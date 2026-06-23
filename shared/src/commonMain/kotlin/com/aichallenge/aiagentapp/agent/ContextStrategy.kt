@@ -12,13 +12,17 @@ enum class ContextStrategy {
     FACTS_KV,
 
     /** Checkpoint + независимые ветки A/B от точки разветвления. */
-    BRANCHING;
+    BRANCHING,
+
+    /** Три слоя памяти: краткосрочная / рабочая / долговременная (День 11). */
+    MEMORY_LAYERS;
 
     val displayName: String
         get() = when (this) {
             SLIDING_WINDOW -> "Sliding Window"
             FACTS_KV -> "Sticky Facts"
             BRANCHING -> "Branching"
+            MEMORY_LAYERS -> "Memory Layers"
         }
 
     companion object {
@@ -28,6 +32,7 @@ enum class ContextStrategy {
             when (name) {
                 "FACTS_KV" -> FACTS_KV
                 "BRANCHING" -> BRANCHING
+                "MEMORY_LAYERS" -> MEMORY_LAYERS
                 "FULL", "SLIDING_WINDOW", null -> SLIDING_WINDOW
                 else -> entries.find { it.name == name } ?: SLIDING_WINDOW
             }

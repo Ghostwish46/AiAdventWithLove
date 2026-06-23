@@ -42,7 +42,9 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
                 val body = response.body()
                 val content = body?.choices?.firstOrNull()?.message?.content
                 if (content != null) {
-                    Result.success(AgentTurnResult(content, body.usage, elapsedMs))
+                    val usage = body?.usage?.normalized().takeIf { it.isMeaningful() }
+                        ?: estimateUsage(messages, content)
+                    Result.success(AgentTurnResult(content, usage, elapsedMs))
                 } else {
                     Result.failure(Exception("Empty response from API"))
                 }
@@ -189,7 +191,8 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
         val request = DeepSeekRequest(
             model = modelId,
             messages = messages,
-            stream = true
+            stream = true,
+            streamOptions = StreamOptions(includeUsage = true)
         )
         try {
             val response = routerAiApi.createChatCompletionStream(request)
@@ -209,6 +212,7 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
                 return@flow
             }
             var usage: Usage? = null
+            val accumulated = StringBuilder()
             body.byteStream().bufferedReader(Charsets.UTF_8).use { reader ->
                 while (true) {
                     val line = reader.readLine() ?: break
@@ -218,17 +222,24 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) {
                     if (data == "[DONE]") break
                     try {
                         val chunk = gson.fromJson(data, StreamChunk::class.java)
-                        chunk.usage?.let { usage = it }
+                        chunk.usage?.normalized()?.let { parsed ->
+                            if (parsed.isMeaningful()) usage = parsed
+                        }
                         val delta = chunk.choices?.firstOrNull()?.delta ?: continue
                         val content = delta.content
                         // Показываем только финальный ответ (content), без reasoning («думки» модели)
-                        if (!content.isNullOrEmpty()) emit(StreamEvent.Chunk(content))
+                        if (!content.isNullOrEmpty()) {
+                            accumulated.append(content)
+                            emit(StreamEvent.Chunk(content))
+                        }
                     } catch (_: Exception) {
                         // skip unparseable chunk
                     }
                 }
             }
-            emit(StreamEvent.Done(usage))
+            val finalUsage = usage?.takeIf { it.isMeaningful() }
+                ?: estimateUsage(messages, accumulated.toString())
+            emit(StreamEvent.Done(finalUsage))
         } catch (e: Exception) {
             emit(StreamEvent.Error(e.message ?: "Stream error"))
         }

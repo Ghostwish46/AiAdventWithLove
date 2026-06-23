@@ -1,11 +1,13 @@
 package com.aichallenge.aiagentapp
 
 import com.aichallenge.aiagentapp.data.ConversationStore
+import com.aichallenge.aiagentapp.data.LongTermMemoryStore
 import com.aichallenge.aiagentapp.data.LlmClient
 import com.aichallenge.aiagentapp.data.ModelInfo
 
 data class AppDependencies(
     val conversationRepository: ConversationStore,
+    val longTermMemoryRepository: LongTermMemoryStore,
     val deepSeekRepository: LlmClient,
     val modelInfo: ModelInfo,
     val systemPrompt: String
