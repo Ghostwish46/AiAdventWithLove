@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -49,8 +51,18 @@ import androidx.navigation.NavController
 import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
+import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
 import com.aichallenge.aiagentapp.data.Usage
 import com.aichallenge.aiagentapp.platform.platformCopyToClipboard
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.input.ImeAction
+import com.aichallenge.aiagentapp.ui.MarkdownText
+import com.aichallenge.aiagentapp.ui.ProfileAvatar
 import com.aichallenge.aiagentapp.ui.platformSafeAreaModifier
 
 @Composable
@@ -98,10 +110,21 @@ fun ChatScreen(
                     }
                 }
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "AI Agent",
-                        style = MaterialTheme.typography.titleLarge
-                    )
+                    if (state.assistantProfile.isPersona()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            ProfileAvatar(profile = state.assistantProfile, size = 24.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = state.assistantProfile.label,
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = "AI Agent",
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                    }
                     Text(
                         text = "Стратегия: ${state.contextStrategy.displayName}",
                         style = MaterialTheme.typography.labelMedium,
@@ -197,6 +220,7 @@ fun ChatScreen(
                             }
                             MessageBubble(
                                 message = message.copy(content = displayContent),
+                                assistantProfile = state.assistantProfile,
                                 maxWidth = chatColumnWidth * 0.85f,
                                 onCopied = onCopied,
                                 showPinToLongTerm = state.contextStrategy == ContextStrategy.MEMORY_LAYERS &&
@@ -256,6 +280,7 @@ fun ChatScreen(
 @Composable
 private fun MessageBubble(
     message: UiMessage,
+    assistantProfile: AssistantProfile,
     maxWidth: Dp,
     onCopied: () -> Unit,
     showPinToLongTerm: Boolean = false,
@@ -265,98 +290,141 @@ private fun MessageBubble(
 
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Top
     ) {
-        val bgColor = when {
-            message.isError -> MaterialTheme.colorScheme.errorContainer
-            isUser -> MaterialTheme.colorScheme.primaryContainer
-            else -> MaterialTheme.colorScheme.secondaryContainer
+        if (!isUser) {
+            ProfileAvatar(
+                profile = assistantProfile,
+                size = 36.dp,
+                modifier = Modifier.padding(end = 8.dp, top = 4.dp)
+            )
         }
-        val textColor = when {
-            message.isError -> MaterialTheme.colorScheme.onErrorContainer
-            isUser -> MaterialTheme.colorScheme.onPrimaryContainer
-            else -> MaterialTheme.colorScheme.onSecondaryContainer
-        }
-        val shape = RoundedCornerShape(
-            topStart = 16.dp,
-            topEnd = 16.dp,
-            bottomStart = if (isUser) 16.dp else 4.dp,
-            bottomEnd = if (isUser) 4.dp else 16.dp
-        )
-
         Column(
-            modifier = Modifier
-                .widthIn(max = maxWidth)
-                .clip(shape)
-                .background(bgColor)
-                .padding(12.dp)
+            modifier = Modifier.widthIn(max = maxWidth),
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
         ) {
-            if (message.isLoading && message.content.isEmpty()) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    strokeWidth = 2.dp
+            if (!isUser && assistantProfile.isPersona()) {
+                Text(
+                    text = assistantProfile.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(bottom = 4.dp, start = 2.dp)
                 )
+            }
+            MessageBubbleContent(
+                message = message,
+                isUser = isUser,
+                onCopied = onCopied,
+                showPinToLongTerm = showPinToLongTerm,
+                onPinToLongTerm = onPinToLongTerm
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageBubbleContent(
+    message: UiMessage,
+    isUser: Boolean,
+    onCopied: () -> Unit,
+    showPinToLongTerm: Boolean,
+    onPinToLongTerm: () -> Unit
+) {
+    val bgColor = when {
+        message.isError -> MaterialTheme.colorScheme.errorContainer
+        isUser -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.secondaryContainer
+    }
+    val textColor = when {
+        message.isError -> MaterialTheme.colorScheme.onErrorContainer
+        isUser -> MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.onSecondaryContainer
+    }
+    val shape = RoundedCornerShape(
+        topStart = 16.dp,
+        topEnd = 16.dp,
+        bottomStart = if (isUser) 16.dp else 4.dp,
+        bottomEnd = if (isUser) 4.dp else 16.dp
+    )
+
+    Column(
+        modifier = Modifier
+            .clip(shape)
+            .background(bgColor)
+            .padding(12.dp)
+    ) {
+        if (message.isLoading && message.content.isEmpty()) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp
+            )
+        } else {
+            if (message.isLoading && message.content.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MarkdownText(
+                        text = message.content,
+                        modifier = Modifier.weight(1f),
+                        color = textColor
+                    )
+                    Spacer(modifier = Modifier.size(4.dp))
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp
+                    )
+                }
             } else {
-                if (message.isLoading && message.content.isNotEmpty()) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = message.content,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = textColor,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Spacer(modifier = Modifier.size(4.dp))
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp
-                        )
-                    }
+                if (!isUser && (message.usage != null || message.elapsedMs > 0)) {
+                    MessageMetrics(
+                        usage = message.usage,
+                        elapsedMs = message.elapsedMs,
+                        estimatedCostRub = message.estimatedCostRub,
+                        textColor = textColor
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+                if (!isUser) {
+                    MarkdownText(
+                        text = message.content,
+                        color = textColor
+                    )
                 } else {
-                    if (!isUser && (message.usage != null || message.elapsedMs > 0)) {
-                        MessageMetrics(
-                            usage = message.usage,
-                            elapsedMs = message.elapsedMs,
-                            estimatedCostRub = message.estimatedCostRub,
-                            textColor = textColor
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                    }
                     Text(
                         text = message.content,
                         style = MaterialTheme.typography.bodyLarge,
                         color = textColor
                     )
                 }
-                if (message.content.isNotEmpty()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        if (showPinToLongTerm) {
-                            IconButton(
-                                onClick = onPinToLongTerm,
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Bookmark,
-                                    contentDescription = "В долговременную",
-                                    tint = textColor
-                                )
-                            }
-                        }
+            }
+            if (message.content.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (showPinToLongTerm) {
                         IconButton(
-                            onClick = {
-                                platformCopyToClipboard(message.content)
-                                onCopied()
-                            },
+                            onClick = onPinToLongTerm,
                             modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.ContentCopy,
-                                contentDescription = "Копировать",
+                                imageVector = Icons.Default.Bookmark,
+                                contentDescription = "В долговременную",
                                 tint = textColor
                             )
                         }
+                    }
+                    IconButton(
+                        onClick = {
+                            platformCopyToClipboard(message.content)
+                            onCopied()
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "Копировать",
+                            tint = textColor
+                        )
                     }
                 }
             }
@@ -606,10 +674,33 @@ private fun InputBar(
         OutlinedTextField(
             value = input,
             onValueChange = onInputChange,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .onPreviewKeyEvent { event ->
+                    if (
+                        event.type == KeyEventType.KeyDown &&
+                        event.key == Key.Enter &&
+                        !event.isShiftPressed
+                    ) {
+                        if (input.isNotBlank() && !isLoading) {
+                            onSend()
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                },
             placeholder = { Text("Напишите сообщение...") },
             enabled = !isLoading,
-            maxLines = 4,
+            maxLines = 6,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(
+                onSend = {
+                    if (input.isNotBlank() && !isLoading) {
+                        onSend()
+                    }
+                }
+            ),
             shape = RoundedCornerShape(24.dp)
         )
 

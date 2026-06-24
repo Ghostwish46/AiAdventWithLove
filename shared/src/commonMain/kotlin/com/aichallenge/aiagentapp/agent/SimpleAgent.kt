@@ -5,6 +5,8 @@ import com.aichallenge.aiagentapp.agent.memory.MemoryPromptBuilder
 import com.aichallenge.aiagentapp.agent.memory.MemoryRouter
 import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
 import com.aichallenge.aiagentapp.agent.memory.WorkingMemory
+import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
+import com.aichallenge.aiagentapp.agent.profile.ProfilePromptBuilder
 import com.aichallenge.aiagentapp.data.AgentTurnResult
 import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.LlmClient
@@ -23,7 +25,8 @@ class SimpleAgent(
     initialStickyFacts: Map<String, String> = emptyMap(),
     initialBranching: BranchingState? = null,
     initialWorkingMemory: WorkingMemory = WorkingMemory(),
-    private val longTermMemoryStore: LongTermMemoryStore? = null
+    private val longTermMemoryStore: LongTermMemoryStore? = null,
+    private val assistantProfile: AssistantProfile = AssistantProfile.NEUTRAL
 ) {
     companion object {
         const val KEEP_LAST_MESSAGES = 8
@@ -74,6 +77,8 @@ class SimpleAgent(
     }
 
     fun getContextStrategy(): ContextStrategy = contextStrategyInternal
+
+    fun getAssistantProfile(): AssistantProfile = assistantProfile
 
     fun getRollingSummary(): String = ""
 
@@ -286,28 +291,29 @@ class SimpleAgent(
     }
 
     private fun buildMessagesForApi(): List<ChatMessage> = buildList {
-        val systemContent = when (contextStrategyInternal) {
+        var systemContent = ProfilePromptBuilder.buildSystemPrompt(systemPrompt, assistantProfile)
+        systemContent = when (contextStrategyInternal) {
             ContextStrategy.FACTS_KV -> {
                 if (stickyFacts.isNotEmpty()) {
                     val block = stickyFacts.entries.joinToString("\n") { "${it.key}: ${it.value}" }
-                    "$systemPrompt\n\nЗафиксированные факты из диалога (ключ — значение):\n$block"
+                    "$systemContent\n\nЗафиксированные факты из диалога (ключ — значение):\n$block"
                 } else {
-                    systemPrompt
+                    systemContent
                 }
             }
             ContextStrategy.MEMORY_LAYERS -> {
                 val memory = agentMemory
                 if (memory != null) {
                     MemoryPromptBuilder.buildSystemPrompt(
-                        basePrompt = systemPrompt,
+                        basePrompt = systemContent,
                         working = memory.getWorkingMemory(),
                         longTerm = memory.getLongTermMemory()
                     )
                 } else {
-                    systemPrompt
+                    systemContent
                 }
             }
-            else -> systemPrompt
+            else -> systemContent
         }
         add(ChatMessage(role = "system", content = systemContent))
         addAll(apiPayloadMessages())

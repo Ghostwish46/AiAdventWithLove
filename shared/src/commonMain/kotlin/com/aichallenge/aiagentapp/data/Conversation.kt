@@ -13,5 +13,7 @@ data class Conversation(
     /** JSON snapshot веток для BRANCHING. */
     val branchingJson: String? = null,
     /** Рабочая память для MEMORY_LAYERS (per-chat). */
-    val workingMemoryJson: String? = null
+    val workingMemoryJson: String? = null,
+    /** ID персоны ассистента (preset_* или uuid кастомного). */
+    val profileId: String? = null
 )

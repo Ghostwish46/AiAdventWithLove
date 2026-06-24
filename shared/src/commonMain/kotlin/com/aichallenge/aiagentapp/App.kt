@@ -18,6 +18,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
+import com.aichallenge.aiagentapp.agent.profile.ProfileCatalog
 import com.aichallenge.aiagentapp.data.parseBranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.parseStickyFactsJson
 import com.aichallenge.aiagentapp.data.parseWorkingMemoryJson
@@ -29,6 +30,9 @@ fun App(deps: AppDependencies) {
     val scope = rememberCoroutineScope()
     val onCopied: () -> Unit = {
         scope.launch { snackbarHostState.showSnackbar("Скопировано") }
+    }
+    val profileCatalog = remember(deps.profileCatalogRepository) {
+        createProfileCatalog(deps.profileCatalogRepository)
     }
 
     @Suppress("UnusedMaterial3ScaffoldPaddingParameter")
@@ -44,7 +48,10 @@ fun App(deps: AppDependencies) {
                 ) {
                     composable("home") {
                         val homeViewModel: HomeViewModel = viewModel {
-                            HomeViewModel(deps.conversationRepository)
+                            HomeViewModel(
+                                deps.conversationRepository,
+                                deps.profileCatalogRepository
+                            )
                         }
                         HomeScreen(
                             viewModel = homeViewModel,
@@ -52,19 +59,63 @@ fun App(deps: AppDependencies) {
                         )
                     }
                     composable("new_chat") {
-                        NewChatScreen(navController = navController)
+                        profileCatalog.updateCustomProfiles(deps.profileCatalogRepository.loadCustomProfiles())
+                        NewChatScreen(
+                            navController = navController,
+                            profileCatalog = profileCatalog,
+                            profileCatalogStore = deps.profileCatalogRepository
+                        )
+                    }
+                    composable("settings") {
+                        val settingsViewModel: SettingsViewModel = viewModel {
+                            SettingsViewModel(deps.profileCatalogRepository)
+                        }
+                        SettingsScreen(
+                            viewModel = settingsViewModel,
+                            navController = navController
+                        )
+                    }
+                    composable("settings/profile/new") {
+                        val settingsViewModel: SettingsViewModel = viewModel(key = "settings") {
+                            SettingsViewModel(deps.profileCatalogRepository)
+                        }
+                        ProfileEditorScreen(
+                            viewModel = settingsViewModel,
+                            navController = navController,
+                            profileId = null
+                        )
                     }
                     composable(
-                        route = "chat/new/{strategy}",
+                        route = "settings/profile/{profileId}",
                         arguments = listOf(
-                            navArgument("strategy") { type = NavType.StringType }
+                            navArgument("profileId") { type = NavType.StringType }
+                        )
+                    ) { backStackEntry ->
+                        val profileId = backStackEntry.arguments?.getString("profileId")
+                        val settingsViewModel: SettingsViewModel = viewModel(key = "settings") {
+                            SettingsViewModel(deps.profileCatalogRepository)
+                        }
+                        ProfileEditorScreen(
+                            viewModel = settingsViewModel,
+                            navController = navController,
+                            profileId = profileId
+                        )
+                    }
+                    composable(
+                        route = "chat/new/{strategy}/{profileId}",
+                        arguments = listOf(
+                            navArgument("strategy") { type = NavType.StringType },
+                            navArgument("profileId") { type = NavType.StringType }
                         )
                     ) { backStackEntry ->
                         val strategyName = backStackEntry.arguments
                             ?.getString("strategy")
                             ?: ContextStrategy.SLIDING_WINDOW.name
+                        val profileId = backStackEntry.arguments?.getString("profileId")
                         val strategy = ContextStrategy.fromSavedName(strategyName)
-                        val chatViewModel: ChatViewModel = viewModel(key = "new_$strategyName") {
+                        profileCatalog.updateCustomProfiles(deps.profileCatalogRepository.loadCustomProfiles())
+                        val assistantProfile = profileCatalog.resolve(profileId)
+                        val chatViewModel: ChatViewModel = viewModel(key = "new_${strategyName}_$profileId") {
                             val agent = SimpleAgent(
                                 repository = deps.deepSeekRepository,
                                 modelInfo = deps.modelInfo,
@@ -74,7 +125,8 @@ fun App(deps: AppDependencies) {
                                     deps.longTermMemoryRepository
                                 } else {
                                     null
-                                }
+                                },
+                                assistantProfile = assistantProfile
                             )
                             ChatViewModel(
                                 agent = agent,
@@ -100,6 +152,8 @@ fun App(deps: AppDependencies) {
                             val conv = deps.conversationRepository.getById(conversationId)
                             val savedMessages = conv?.messages ?: emptyList()
                             val savedStrategy = ContextStrategy.fromSavedName(conv?.contextStrategy)
+                            profileCatalog.updateCustomProfiles(deps.profileCatalogRepository.loadCustomProfiles())
+                            val assistantProfile = profileCatalog.resolve(conv?.profileId)
                             val initialBranching =
                                 if (savedStrategy == ContextStrategy.BRANCHING) {
                                     parseBranchingUiSnapshot(conv?.branchingJson)
@@ -141,7 +195,8 @@ fun App(deps: AppDependencies) {
                                     deps.longTermMemoryRepository
                                 } else {
                                     null
-                                }
+                                },
+                                assistantProfile = assistantProfile
                             )
                             val initialMessages = if (initialBranching != null) {
                                 emptyList()

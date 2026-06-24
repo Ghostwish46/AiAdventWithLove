@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
+import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
 import com.aichallenge.aiagentapp.data.BranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.Conversation
@@ -49,7 +50,8 @@ data class ChatUiState(
     val branches: List<BranchOption> = emptyList(),
     val canCreateCheckpoint: Boolean = false,
     val memorySnapshot: MemorySnapshot? = null,
-    val lastRoutingLog: List<String> = emptyList()
+    val lastRoutingLog: List<String> = emptyList(),
+    val assistantProfile: AssistantProfile = AssistantProfile.NEUTRAL
 )
 
 class ChatViewModel(
@@ -98,7 +100,8 @@ class ChatViewModel(
             branches = branchOptions(),
             canCreateCheckpoint = canCreateCheckpoint(messages, branched),
             memorySnapshot = memorySnapshotForState(),
-            lastRoutingLog = agent.getMemorySnapshot()?.routingLog ?: emptyList()
+            lastRoutingLog = agent.getMemorySnapshot()?.routingLog ?: emptyList(),
+            assistantProfile = agent.getAssistantProfile()
         )
     }
 
@@ -304,7 +307,8 @@ class ChatViewModel(
             stickyFactsSummary = "",
             branches = branchOptions(),
             canCreateCheckpoint = false,
-            memorySnapshot = memorySnapshotForState()
+            memorySnapshot = memorySnapshotForState(),
+            assistantProfile = agent.getAssistantProfile()
         )
         currentConversationId = null
     }
@@ -368,7 +372,8 @@ class ChatViewModel(
             rollingSummary = null,
             stickyFactsJson = stickyFactsJson,
             branchingJson = branchingJson,
-            workingMemoryJson = workingMemoryJson
+            workingMemoryJson = workingMemoryJson,
+            profileId = agent.getAssistantProfile().id.takeIf { it != AssistantProfile.ID_NEUTRAL }
         )
         conversationRepository.save(conversation)
     }

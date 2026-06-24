@@ -15,8 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -35,24 +34,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
-import com.aichallenge.aiagentapp.agent.ContextStrategy
-import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
-import com.aichallenge.aiagentapp.data.Conversation
 import com.aichallenge.aiagentapp.ui.ProfileAvatar
 import com.aichallenge.aiagentapp.ui.platformSafeAreaModifier
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(
-    viewModel: HomeViewModel,
+fun SettingsScreen(
+    viewModel: SettingsViewModel,
     navController: NavController
 ) {
-    val conversations by viewModel.conversations.collectAsState()
+    val customProfiles by viewModel.customProfiles.collectAsState()
 
     LaunchedEffect(navController.currentBackStackEntry?.destination?.route) {
-        if (navController.currentBackStackEntry?.destination?.route == "home") {
-            viewModel.loadConversations()
+        if (navController.currentBackStackEntry?.destination?.route == "settings") {
+            viewModel.reload()
         }
     }
 
@@ -62,24 +58,17 @@ fun HomeScreen(
             .then(platformSafeAreaModifier()),
         topBar = {
             TopAppBar(
-                title = { Text("Темы") },
+                title = { Text("Настройки профилей") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { navController.navigate("settings") }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Настройки")
                     }
                 }
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { navController.navigate("new_chat") }
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Новая тема")
+            FloatingActionButton(onClick = { navController.navigate("settings/profile/new") }) {
+                Icon(Icons.Default.Add, contentDescription = "Добавить профиль")
             }
         }
     ) { padding ->
@@ -90,31 +79,34 @@ fun HomeScreen(
                 .padding(horizontal = 16.dp)
         ) {
             Text(
-                text = "Новая тема",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { navController.navigate("new_chat") }
-                    .padding(vertical = 12.dp)
+                text = "Кастомные профили",
+                style = MaterialTheme.typography.titleMedium
             )
-            Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Сохранённые темы",
-                style = MaterialTheme.typography.labelLarge,
+                text = "Создайте свои персоны ассистента. Они появятся при создании нового диалога.",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(modifier = Modifier.height(8.dp))
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 80.dp)
-            ) {
-                items(conversations) { conv ->
-                    ConversationItem(
-                        conversation = conv,
-                        profile = viewModel.resolveProfile(conv.profileId),
-                        onClick = { navController.navigate("chat/${conv.id}") }
-                    )
+            Spacer(modifier = Modifier.height(12.dp))
+            if (customProfiles.isEmpty()) {
+                Text(
+                    text = "Пока нет кастомных профилей. Нажмите + чтобы добавить.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 24.dp)
+                )
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(bottom = 80.dp)
+                ) {
+                    items(customProfiles, key = { it.id }) { profile ->
+                        CustomProfileItem(
+                            profile = profile,
+                            onClick = { navController.navigate("settings/profile/${profile.id}") },
+                            onDelete = { viewModel.deleteProfile(profile.id) }
+                        )
+                    }
                 }
             }
         }
@@ -122,10 +114,10 @@ fun HomeScreen(
 }
 
 @Composable
-private fun ConversationItem(
-    conversation: Conversation,
+private fun CustomProfileItem(
     profile: AssistantProfile,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDelete: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -136,35 +128,32 @@ private fun ConversationItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (profile.isPersona()) {
-                ProfileAvatar(profile = profile, size = 20.dp)
-            } else {
-                Icon(
-                    imageVector = Icons.Default.Chat,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
+            ProfileAvatar(profile = profile, size = 48.dp)
             Spacer(modifier = Modifier.padding(horizontal = 12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = conversation.title.ifBlank { "Без названия" },
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface
+                    text = profile.label,
+                    style = MaterialTheme.typography.bodyLarge
                 )
-                val personaSuffix = if (profile.isPersona()) " · ${profile.label}" else ""
-                Text(
-                    text = "${conversation.messages.size} сообщ. · ${strategyLabel(conversation.contextStrategy)}$personaSuffix",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                if (profile.communicationStyle.isNotBlank()) {
+                    Text(
+                        text = profile.communicationStyle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                }
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Удалить",
+                    tint = MaterialTheme.colorScheme.error
                 )
             }
         }
     }
 }
-
-private fun strategyLabel(saved: String?): String =
-    ContextStrategy.fromSavedName(saved).displayName
