@@ -15,5 +15,7 @@ data class Conversation(
     /** Рабочая память для MEMORY_LAYERS (per-chat). */
     val workingMemoryJson: String? = null,
     /** ID персоны ассистента (preset_* или uuid кастомного). */
-    val profileId: String? = null
+    val profileId: String? = null,
+    /** Формализованное состояние задачи (День 13). */
+    val taskStateJson: String? = null
 )

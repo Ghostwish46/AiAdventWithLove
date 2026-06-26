@@ -7,6 +7,10 @@ import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
 import com.aichallenge.aiagentapp.agent.memory.WorkingMemory
 import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
 import com.aichallenge.aiagentapp.agent.profile.ProfilePromptBuilder
+import com.aichallenge.aiagentapp.agent.task.TaskState
+import com.aichallenge.aiagentapp.agent.task.TaskStateMachine
+import com.aichallenge.aiagentapp.agent.task.TaskStatePromptBuilder
+import com.aichallenge.aiagentapp.DEFAULT_SYSTEM_PROMPT
 import com.aichallenge.aiagentapp.data.AgentTurnResult
 import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.LlmClient
@@ -19,14 +23,15 @@ import kotlinx.coroutines.flow.flowOf
 class SimpleAgent(
     private val repository: LlmClient,
     private val modelInfo: ModelInfo,
-    private val systemPrompt: String = "Ты полезный AI-ассистент. Отвечай чётко и по делу.",
+    private val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     initialHistory: List<ChatMessage> = emptyList(),
     initialContextStrategy: ContextStrategy = ContextStrategy.SLIDING_WINDOW,
     initialStickyFacts: Map<String, String> = emptyMap(),
     initialBranching: BranchingState? = null,
     initialWorkingMemory: WorkingMemory = WorkingMemory(),
     private val longTermMemoryStore: LongTermMemoryStore? = null,
-    private val assistantProfile: AssistantProfile = AssistantProfile.NEUTRAL
+    private val assistantProfile: AssistantProfile = AssistantProfile.NEUTRAL,
+    initialTaskState: TaskState = TaskState.inactive()
 ) {
     companion object {
         const val KEEP_LAST_MESSAGES = 8
@@ -43,6 +48,8 @@ class SimpleAgent(
     private val stickyFacts = LinkedHashMap<String, String>().apply { putAll(initialStickyFacts) }
 
     private var branchingState: BranchingState? = initialBranching
+
+    private val taskStateMachine = TaskStateMachine(initialTaskState)
 
     private val agentMemory: AgentMemory? =
         if (contextStrategyInternal == ContextStrategy.MEMORY_LAYERS) {
@@ -94,6 +101,24 @@ class SimpleAgent(
     fun getBranchingState(): BranchingState? = branchingState
 
     fun isBranched(): Boolean = branchingState?.isActive == true
+
+    fun getTaskState(): TaskState = taskStateMachine.snapshot()
+
+    fun advanceTaskPhase(): TaskState = taskStateMachine.advancePhase()
+
+    suspend fun updateTaskStateForUserMessage(
+        newUserMessage: String,
+        conversationSoFar: List<ChatMessage>
+    ) {
+        repository.classifyTaskStateUpdate(
+            currentState = taskStateMachine.snapshot(),
+            newUserMessage = newUserMessage,
+            recentContext = conversationSoFar,
+            modelId = modelInfo.id
+        ).onSuccess { result ->
+            taskStateMachine.applyClassification(result)
+        }
+    }
 
     fun createBranchCheckpoint(): Boolean {
         if (contextStrategyInternal != ContextStrategy.BRANCHING || branchingState != null) return false
@@ -315,6 +340,12 @@ class SimpleAgent(
             }
             else -> systemContent
         }
+        if (taskStateMachine.snapshot().isActive) {
+            systemContent = TaskStatePromptBuilder.buildSystemPrompt(
+                systemContent,
+                taskStateMachine.snapshot()
+            )
+        }
         add(ChatMessage(role = "system", content = systemContent))
         addAll(apiPayloadMessages())
     }
@@ -363,5 +394,6 @@ class SimpleAgent(
         stickyFacts.clear()
         branchingState = null
         agentMemory?.clear()
+        taskStateMachine.reset()
     }
 }

@@ -6,6 +6,7 @@ import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
 import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
+import com.aichallenge.aiagentapp.agent.task.TaskState
 import com.aichallenge.aiagentapp.data.BranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.Conversation
@@ -15,6 +16,7 @@ import com.aichallenge.aiagentapp.data.StreamEvent
 import com.aichallenge.aiagentapp.data.Usage
 import com.aichallenge.aiagentapp.data.encodeBranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.encodeStickyFactsJson
+import com.aichallenge.aiagentapp.data.encodeTaskStateJson
 import com.aichallenge.aiagentapp.data.encodeWorkingMemoryJson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,7 +53,8 @@ data class ChatUiState(
     val canCreateCheckpoint: Boolean = false,
     val memorySnapshot: MemorySnapshot? = null,
     val lastRoutingLog: List<String> = emptyList(),
-    val assistantProfile: AssistantProfile = AssistantProfile.NEUTRAL
+    val assistantProfile: AssistantProfile = AssistantProfile.NEUTRAL,
+    val taskState: TaskState = TaskState.inactive()
 )
 
 class ChatViewModel(
@@ -101,7 +104,8 @@ class ChatViewModel(
             canCreateCheckpoint = canCreateCheckpoint(messages, branched),
             memorySnapshot = memorySnapshotForState(),
             lastRoutingLog = agent.getMemorySnapshot()?.routingLog ?: emptyList(),
-            assistantProfile = agent.getAssistantProfile()
+            assistantProfile = agent.getAssistantProfile(),
+            taskState = agent.getTaskState()
         )
     }
 
@@ -182,98 +186,137 @@ class ChatViewModel(
         val text = _uiState.value.input.trim()
         if (text.isBlank() || _uiState.value.isLoading) return
 
-        val strategy = _uiState.value.contextStrategy
-        val needsPreTurnMemory = strategy == ContextStrategy.FACTS_KV || strategy == ContextStrategy.MEMORY_LAYERS
+        val userMsg = UiMessage(role = "user", content = text)
+        val loadingMsg = UiMessage(role = "assistant", content = "", isLoading = true)
         _uiState.value = _uiState.value.copy(
             input = "",
-            isLoading = needsPreTurnMemory
+            messages = _uiState.value.messages + userMsg + loadingMsg,
+            isLoading = true
         )
-
         viewModelScope.launch {
-            if (strategy == ContextStrategy.FACTS_KV) {
-                val prior = conversationChatMessages()
-                agent.mergeStickyFactsForUserMessage(text, prior)
-                _uiState.value = _uiState.value.copy(
-                    stickyFactsSummary = agent.getStickyFactsDisplay()
-                )
-            }
-            if (strategy == ContextStrategy.MEMORY_LAYERS) {
-                val prior = conversationChatMessages()
-                val routingLog = agent.updateMemoryForUserMessage(text, prior)
-                _uiState.value = _uiState.value.copy(
-                    memorySnapshot = agent.getMemorySnapshot(),
-                    lastRoutingLog = routingLog
-                )
-            }
+            executeSend(text, isRetry = false)
+        }
+    }
 
-            val userMsg = UiMessage(role = "user", content = text)
-            val loadingMsg = UiMessage(role = "assistant", content = "", isLoading = true)
+    fun retryLastFailedSend() {
+        if (_uiState.value.isLoading) return
+        val messages = _uiState.value.messages
+        val last = messages.lastOrNull() ?: return
+        if (!last.isError) return
+        val userText = messages.dropLast(1).lastOrNull { it.role == "user" && !it.isError }?.content
+            ?: return
 
+        _uiState.value = _uiState.value.copy(
+            messages = messages.dropLast(1),
+            isLoading = true
+        )
+        viewModelScope.launch {
+            executeSend(userText, isRetry = true)
+        }
+    }
+
+    private suspend fun executeSend(text: String, isRetry: Boolean) {
+        val strategy = _uiState.value.contextStrategy
+
+        if (isRetry) {
             _uiState.value = _uiState.value.copy(
-                messages = _uiState.value.messages + userMsg + loadingMsg,
+                messages = _uiState.value.messages + UiMessage(
+                    role = "assistant",
+                    content = "",
+                    isLoading = true
+                ),
                 isLoading = true
             )
+        }
 
-            val startMs = Clock.System.now().toEpochMilliseconds()
-            agent.processQueryStreaming(text)
-                .catch { e ->
-                    clearStreamingContent()
-                    agent.rollbackLastUserMessage()
-                    replaceLastMessage(
-                        UiMessage(
-                            role = "assistant",
-                            content = e.message ?: "Unknown error",
-                            isError = true
-                        )
+        val prior = conversationChatMessagesForPreTurn(includePendingUser = isRetry)
+
+        agent.updateTaskStateForUserMessage(text, prior)
+        _uiState.value = _uiState.value.copy(taskState = agent.getTaskState())
+
+        if (strategy == ContextStrategy.FACTS_KV) {
+            agent.mergeStickyFactsForUserMessage(text, prior)
+            _uiState.value = _uiState.value.copy(
+                stickyFactsSummary = agent.getStickyFactsDisplay()
+            )
+        }
+        if (strategy == ContextStrategy.MEMORY_LAYERS) {
+            val routingLog = agent.updateMemoryForUserMessage(text, prior)
+            _uiState.value = _uiState.value.copy(
+                memorySnapshot = agent.getMemorySnapshot(),
+                lastRoutingLog = routingLog
+            )
+        }
+
+        val startMs = Clock.System.now().toEpochMilliseconds()
+        agent.processQueryStreaming(text)
+            .catch { e ->
+                clearStreamingContent()
+                agent.rollbackLastUserMessage()
+                replaceLastMessage(
+                    UiMessage(
+                        role = "assistant",
+                        content = e.message ?: "Unknown error",
+                        isError = true
                     )
-                }
-                .collect { event ->
-                    when (event) {
-                        is StreamEvent.Chunk -> {
-                            appendStreamingContent(event.text)
-                            yield()
+                )
+            }
+            .collect { event ->
+                when (event) {
+                    is StreamEvent.Chunk -> {
+                        appendStreamingContent(event.text)
+                        yield()
+                    }
+                    is StreamEvent.Done -> {
+                        val elapsedMs = Clock.System.now().toEpochMilliseconds() - startMs
+                        val accumulated = _uiState.value.streamingContent
+                        clearStreamingContent()
+                        val last = _uiState.value.messages.lastOrNull() ?: return@collect
+                        agent.addAssistantMessage(accumulated)
+                        val cost = event.usage?.let { u ->
+                            u.promptTokens.toDouble() / 1_000_000 * (agent.getModelInfo().inputPricePerM) +
+                                u.completionTokens.toDouble() / 1_000_000 * (agent.getModelInfo().outputPricePerM)
                         }
-                        is StreamEvent.Done -> {
-                            val elapsedMs = Clock.System.now().toEpochMilliseconds() - startMs
-                            val accumulated = _uiState.value.streamingContent
-                            clearStreamingContent()
-                            val last = _uiState.value.messages.lastOrNull() ?: return@collect
-                            agent.addAssistantMessage(accumulated)
-                            val cost = event.usage?.let { u ->
-                                u.promptTokens.toDouble() / 1_000_000 * (agent.getModelInfo().inputPricePerM) +
-                                    u.completionTokens.toDouble() / 1_000_000 * (agent.getModelInfo().outputPricePerM)
-                            }
-                            replaceLastMessage(
-                                last.copy(
-                                    content = accumulated,
-                                    usage = event.usage,
-                                    elapsedMs = elapsedMs,
-                                    estimatedCostRub = cost,
-                                    isLoading = false
-                                )
+                        replaceLastMessage(
+                            last.copy(
+                                content = accumulated,
+                                usage = event.usage,
+                                elapsedMs = elapsedMs,
+                                estimatedCostRub = cost,
+                                isLoading = false
                             )
-                            syncBranchCacheFromDisplay()
-                            if (strategy == ContextStrategy.MEMORY_LAYERS) {
-                                _uiState.value = _uiState.value.copy(
-                                    memorySnapshot = agent.getMemorySnapshot()
-                                )
-                            }
-                            persistConversation()
-                        }
-                        is StreamEvent.Error -> {
-                            clearStreamingContent()
-                            agent.rollbackLastUserMessage()
-                            replaceLastMessage(
-                                UiMessage(
-                                    role = "assistant",
-                                    content = event.message,
-                                    isError = true
-                                )
+                        )
+                        syncBranchCacheFromDisplay()
+                        if (strategy == ContextStrategy.MEMORY_LAYERS) {
+                            _uiState.value = _uiState.value.copy(
+                                memorySnapshot = agent.getMemorySnapshot()
                             )
                         }
+                        persistConversation()
+                    }
+                    is StreamEvent.Error -> {
+                        clearStreamingContent()
+                        agent.rollbackLastUserMessage()
+                        replaceLastMessage(
+                            UiMessage(
+                                role = "assistant",
+                                content = event.message,
+                                isError = true
+                            )
+                        )
                     }
                 }
+            }
+    }
+
+    private fun conversationChatMessagesForPreTurn(includePendingUser: Boolean): List<ChatMessage> {
+        val msgs = _uiState.value.messages.filter { !it.isLoading && !it.isError }
+        val relevant = if (!includePendingUser && msgs.lastOrNull()?.role == "user") {
+            msgs.dropLast(1)
+        } else {
+            msgs
         }
+        return relevant.map { ChatMessage(role = it.role, content = it.content) }
     }
 
     private fun conversationChatMessages(): List<ChatMessage> =
@@ -308,7 +351,8 @@ class ChatViewModel(
             branches = branchOptions(),
             canCreateCheckpoint = false,
             memorySnapshot = memorySnapshotForState(),
-            assistantProfile = agent.getAssistantProfile()
+            assistantProfile = agent.getAssistantProfile(),
+            taskState = TaskState.inactive()
         )
         currentConversationId = null
     }
@@ -373,7 +417,8 @@ class ChatViewModel(
             stickyFactsJson = stickyFactsJson,
             branchingJson = branchingJson,
             workingMemoryJson = workingMemoryJson,
-            profileId = agent.getAssistantProfile().id.takeIf { it != AssistantProfile.ID_NEUTRAL }
+            profileId = agent.getAssistantProfile().id.takeIf { it != AssistantProfile.ID_NEUTRAL },
+            taskStateJson = encodeTaskStateJson(agent.getTaskState())
         )
         conversationRepository.save(conversation)
     }

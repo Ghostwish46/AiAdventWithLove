@@ -1,5 +1,7 @@
 package com.aichallenge.aiagentapp.data
 
+import com.aichallenge.aiagentapp.agent.task.TaskState
+
 sealed class StreamEvent {
     data class Chunk(val text: String) : StreamEvent()
     data class Done(val usage: Usage?) : StreamEvent()
@@ -19,6 +21,19 @@ data class MemoryClassificationResult(
     val routingLog: List<String> = emptyList()
 )
 
+data class TaskStateClassificationResult(
+    val activate: Boolean = false,
+    val taskGoal: String? = null,
+    val currentStep: String = "",
+    val expectedAction: String = "",
+    val advancePhase: Boolean = false,
+    val completedStep: String = "",
+    /** Полный актуальный список открытых вопросов; null — не менять. */
+    val openQuestions: List<String>? = null,
+    /** Новые/обновлённые факты planning (мержатся в state). */
+    val planningFacts: Map<String, String> = emptyMap()
+)
+
 interface LlmClient {
     suspend fun sendMessages(messages: List<ChatMessage>, modelId: String): Result<AgentTurnResult>
     fun sendMessagesStreaming(messages: List<ChatMessage>, modelId: String): kotlinx.coroutines.flow.Flow<StreamEvent>
@@ -36,6 +51,12 @@ interface LlmClient {
         forceLongTerm: Boolean,
         modelId: String
     ): Result<MemoryClassificationResult>
+    suspend fun classifyTaskStateUpdate(
+        currentState: TaskState,
+        newUserMessage: String,
+        recentContext: List<ChatMessage>,
+        modelId: String
+    ): Result<TaskStateClassificationResult>
 }
 
 interface ConversationStore {

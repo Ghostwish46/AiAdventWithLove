@@ -2,6 +2,7 @@ package com.aichallenge.aiagentapp
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -18,7 +19,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -41,10 +42,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
@@ -52,6 +59,8 @@ import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
 import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
+import com.aichallenge.aiagentapp.agent.task.TaskPhase
+import com.aichallenge.aiagentapp.agent.task.TaskState
 import com.aichallenge.aiagentapp.data.Usage
 import com.aichallenge.aiagentapp.platform.platformCopyToClipboard
 import androidx.compose.ui.input.key.Key
@@ -61,6 +70,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import com.aichallenge.aiagentapp.ui.MarkdownText
 import com.aichallenge.aiagentapp.ui.ProfileAvatar
 import com.aichallenge.aiagentapp.ui.platformSafeAreaModifier
@@ -74,7 +85,7 @@ fun ChatScreen(
     val state by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
 
-    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.content) {
+    LaunchedEffect(state.messages.size, state.isLoading, state.messages.lastOrNull()?.content) {
         if (state.messages.isNotEmpty()) {
             listState.animateScrollToItem(state.messages.lastIndex)
         }
@@ -87,7 +98,7 @@ fun ChatScreen(
     ) {
         val screenWidth = maxWidth
         val useSidePanel = screenWidth >= 600.dp
-        val summaryPanelWidth = if (useSidePanel) 300.dp else 220.dp
+        val summaryPanelWidth = if (useSidePanel) 340.dp else 280.dp
         val chatColumnWidth = if (state.messages.isNotEmpty()) {
             screenWidth - summaryPanelWidth - 1.dp
         } else {
@@ -228,7 +239,8 @@ fun ChatScreen(
                                     !message.isLoading &&
                                     !message.isError &&
                                     message.content.isNotBlank(),
-                                onPinToLongTerm = { viewModel.pinToLongTerm(message.content) }
+                                onPinToLongTerm = { viewModel.pinToLongTerm(message.content) },
+                                onRetry = if (message.isError) viewModel::retryLastFailedSend else null
                             )
                         }
 
@@ -255,8 +267,10 @@ fun ChatScreen(
                             .width(summaryPanelWidth)
                             .fillMaxHeight()
                             .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        TaskStatePanel(taskState = state.taskState)
                         DialogSummary(
                             lastRequestContextTokens = lastRequestContextTokens,
                             totalTokensInDialog = totalTokensInDialog,
@@ -284,7 +298,8 @@ private fun MessageBubble(
     maxWidth: Dp,
     onCopied: () -> Unit,
     showPinToLongTerm: Boolean = false,
-    onPinToLongTerm: () -> Unit = {}
+    onPinToLongTerm: () -> Unit = {},
+    onRetry: (() -> Unit)? = null
 ) {
     val isUser = message.role == "user"
 
@@ -317,7 +332,8 @@ private fun MessageBubble(
                 isUser = isUser,
                 onCopied = onCopied,
                 showPinToLongTerm = showPinToLongTerm,
-                onPinToLongTerm = onPinToLongTerm
+                onPinToLongTerm = onPinToLongTerm,
+                onRetry = onRetry
             )
         }
     }
@@ -329,7 +345,8 @@ private fun MessageBubbleContent(
     isUser: Boolean,
     onCopied: () -> Unit,
     showPinToLongTerm: Boolean,
-    onPinToLongTerm: () -> Unit
+    onPinToLongTerm: () -> Unit,
+    onRetry: (() -> Unit)? = null
 ) {
     val bgColor = when {
         message.isError -> MaterialTheme.colorScheme.errorContainer
@@ -360,7 +377,25 @@ private fun MessageBubbleContent(
                 strokeWidth = 2.dp
             )
         } else {
-            if (message.isLoading && message.content.isNotEmpty()) {
+            if (message.isError) {
+                Text(
+                    text = message.content,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = textColor
+                )
+                if (onRetry != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(onClick = onRetry) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Повторить")
+                    }
+                }
+            } else if (message.isLoading && message.content.isNotEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     MarkdownText(
                         text = message.content,
@@ -386,6 +421,7 @@ private fun MessageBubbleContent(
                 if (!isUser) {
                     MarkdownText(
                         text = message.content,
+                        modifier = Modifier.fillMaxWidth(),
                         color = textColor
                     )
                 } else {
@@ -396,7 +432,7 @@ private fun MessageBubbleContent(
                     )
                 }
             }
-            if (message.content.isNotEmpty()) {
+            if (message.content.isNotEmpty() && !message.isError) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
@@ -598,6 +634,138 @@ private fun DialogSummary(
 }
 
 @Composable
+private fun TaskStatePanel(taskState: TaskState) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = "Состояние задачи",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        if (!taskState.isActive) {
+            Text(
+                text = "Задача не активна — появится после сообщения с явной целью.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@Column
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            TaskPhase.entries.chunked(2).forEach { rowPhases ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    rowPhases.forEach { phase ->
+                        TaskPhaseChip(
+                            phase = phase,
+                            selected = taskState.phase == phase,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    if (rowPhases.size == 1) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+        if (!taskState.taskGoal.isNullOrBlank()) {
+            Text(
+                text = "Цель: ${taskState.taskGoal}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (taskState.currentStep.isNotBlank()) {
+            Text(
+                text = "Шаг: ${taskState.currentStep}",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        if (taskState.expectedAction.isNotBlank()) {
+            Text(
+                text = "Ожидание: ${taskState.expectedAction}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        if (taskState.phase == TaskPhase.PLANNING && taskState.planningFacts.isNotEmpty()) {
+            val facts = taskState.planningFacts.entries.joinToString("\n") { "• ${it.key}: ${it.value}" }
+            Text(
+                text = "Собрано:\n$facts",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (taskState.phase == TaskPhase.PLANNING && taskState.openQuestions.isNotEmpty()) {
+            val questions = taskState.openQuestions.mapIndexed { i, q -> "${i + 1}. $q" }.joinToString("\n")
+            Text(
+                text = "Ждём ответы:\n$questions",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        if (taskState.completedSteps.isNotEmpty()) {
+            val preview = taskState.completedSteps.joinToString("\n• ", prefix = "• ")
+            Text(
+                text = "Выполнено:\n$preview",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun TaskPhaseChip(
+    phase: TaskPhase,
+    selected: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val label = when (phase) {
+        TaskPhase.PLANNING -> "Planning"
+        TaskPhase.EXECUTION -> "Execution"
+        TaskPhase.VALIDATION -> "Validation"
+        TaskPhase.DONE -> "Done"
+    }
+    val backgroundColor = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)
+    }
+    val textColor = if (selected) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+    }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(backgroundColor)
+            .padding(horizontal = 6.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = textColor,
+            maxLines = 2
+        )
+    }
+}
+
+@Composable
 private fun MemoryLayersPanel(
     snapshot: MemorySnapshot,
     lastRoutingLog: List<String>,
@@ -664,6 +832,14 @@ private fun InputBar(
     onInputChange: (String) -> Unit,
     onSend: () -> Unit
 ) {
+    var textFieldValue by remember { mutableStateOf(TextFieldValue(input)) }
+
+    LaunchedEffect(input) {
+        if (input != textFieldValue.text) {
+            textFieldValue = TextFieldValue(input)
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -672,34 +848,44 @@ private fun InputBar(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         OutlinedTextField(
-            value = input,
-            onValueChange = onInputChange,
+            value = textFieldValue,
+            onValueChange = { updated ->
+                textFieldValue = updated
+                onInputChange(updated.text)
+            },
             modifier = Modifier
                 .weight(1f)
                 .onPreviewKeyEvent { event ->
-                    if (
-                        event.type == KeyEventType.KeyDown &&
-                        event.key == Key.Enter &&
-                        !event.isShiftPressed
-                    ) {
+                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    val isEnter = event.key == Key.Enter || event.key == Key.NumPadEnter
+                    if (!isEnter) return@onPreviewKeyEvent false
+                    if (event.isShiftPressed) {
+                        val start = textFieldValue.selection.min
+                        val end = textFieldValue.selection.max
+                        val newText = buildString {
+                            append(textFieldValue.text.substring(0, start))
+                            append('\n')
+                            append(textFieldValue.text.substring(end))
+                        }
+                        val cursor = start + 1
+                        textFieldValue = TextFieldValue(newText, TextRange(cursor, cursor))
+                        onInputChange(newText)
+                        true
+                    } else {
                         if (input.isNotBlank() && !isLoading) {
                             onSend()
                         }
                         true
-                    } else {
-                        false
                     }
                 },
-            placeholder = { Text("Напишите сообщение...") },
+            placeholder = { Text("Напишите сообщение... (Shift+Enter — новая строка)") },
             enabled = !isLoading,
-            maxLines = 6,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(
-                onSend = {
-                    if (input.isNotBlank() && !isLoading) {
-                        onSend()
-                    }
-                }
+            minLines = 1,
+            maxLines = 8,
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.Sentences,
+                keyboardType = KeyboardType.Text,
+                imeAction = ImeAction.Default
             ),
             shape = RoundedCornerShape(24.dp)
         )

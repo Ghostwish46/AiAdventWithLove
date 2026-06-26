@@ -21,6 +21,7 @@ import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.agent.profile.ProfileCatalog
 import com.aichallenge.aiagentapp.data.parseBranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.parseStickyFactsJson
+import com.aichallenge.aiagentapp.data.parseTaskStateJson
 import com.aichallenge.aiagentapp.data.parseWorkingMemoryJson
 import kotlinx.coroutines.launch
 
@@ -182,6 +183,7 @@ fun App(deps: AppDependencies) {
                                 } else {
                                     com.aichallenge.aiagentapp.agent.memory.WorkingMemory()
                                 }
+                            val initialTaskState = parseTaskStateJson(conv?.taskStateJson)
                             val agent = SimpleAgent(
                                 repository = deps.deepSeekRepository,
                                 modelInfo = deps.modelInfo,
@@ -196,7 +198,8 @@ fun App(deps: AppDependencies) {
                                 } else {
                                     null
                                 },
-                                assistantProfile = assistantProfile
+                                assistantProfile = assistantProfile,
+                                initialTaskState = initialTaskState
                             )
                             val initialMessages = if (initialBranching != null) {
                                 emptyList()

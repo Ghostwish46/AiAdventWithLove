@@ -1,5 +1,6 @@
 package com.aichallenge.aiagentapp.data
 
+import com.aichallenge.aiagentapp.agent.task.TaskState
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.FieldNamingPolicy
@@ -183,6 +184,144 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
             Result.failure(e)
         }
     }
+
+    override suspend fun classifyTaskStateUpdate(
+        currentState: TaskState,
+        newUserMessage: String,
+        recentContext: List<ChatMessage>,
+        modelId: String
+    ): Result<TaskStateClassificationResult> = withContext(Dispatchers.IO) {
+        val gsonLocal = Gson()
+        val contextLines = recentContext.takeLast(6).joinToString("\n") { m ->
+            val label = if (m.role == "user") "П" else "А"
+            "$label: ${m.content.take(600)}"
+        }
+        val system = buildString {
+            append(
+                "Ты классификатор состояния задачи ассистента. Этапы: planning → execution → validation → done.\n" +
+                    "По сообщению пользователя и контексту диалога обнови формализованное состояние задачи.\n\n" +
+                    "Верни ТОЛЬКО один валидный JSON без markdown:\n" +
+                    "{\n" +
+                    "  \"activate\": true/false,\n" +
+                    "  \"taskGoal\": \"...\",\n" +
+                    "  \"currentStep\": \"...\",\n" +
+                    "  \"expectedAction\": \"...\",\n" +
+                    "  \"advancePhase\": true/false,\n" +
+                    "  \"completedStep\": \"...\",\n" +
+                    "  \"openQuestions\": [\"вопрос 1\", \"вопрос 2\"],\n" +
+                    "  \"planningFacts\": {\"ключ\": \"значение\"}\n" +
+                    "}\n\n" +
+                    "Общие правила:\n" +
+                    "- activate=true, если пользователь ставит новую задачу или продолжает текущую\n" +
+                    "- currentStep — что делаем сейчас; expectedAction — что ассистент должен сделать в СЛЕДУЮЩЕМ ответе\n" +
+                    "- completedStep — один завершённый шаг (если есть), иначе пустая строка\n" +
+                    "- advancePhase=true только если этап явно завершён (например «план готов, начинай» → execution)\n\n" +
+                    "PLANNING — особые правила:\n" +
+                    "- openQuestions: полный список вопросов БЕЗ ответа. Обновляй каждый ход.\n" +
+                    "- При первом planning-ответе ассистент должен задать СРАЗУ НЕСКОЛЬКО вопросов (3–7) одним списком — все они в openQuestions.\n" +
+                    "- ЗАПРЕЩЕНО expectedAction «задать следующий/один вопрос» — только «задать все уточняющие вопросы списком» или «напомнить о неотвеченных и принять ответы».\n" +
+                    "- Когда пользователь ответил на вопрос — убери его из openQuestions, добавь факт в planningFacts.\n" +
+                    "- Пользователь может ответить сразу на несколько вопросов в одном сообщении — убери все закрытые из openQuestions.\n" +
+                    "- Если пользователь ответил только на часть — остальные ОСТАЮТСЯ в openQuestions; expectedAction: «напомнить оставшиеся вопросы списком».\n" +
+                    "- advancePhase=true на planning ТОЛЬКО если openQuestions пуст ИЛИ пользователь явно просит начать работу/решай сам.\n" +
+                    "- Если пользователь пишет «на своё усмотрение»/«пропусти» по теме — зафиксируй в planningFacts и убери связанный вопрос.\n" +
+                    "- Можно добавлять новые openQuestions, если ответ пользователя выявил новую неясность.\n" +
+                    "- planningFacts: собранные ответы (аудитория, длительность, формат, ограничения и т.д.)\n\n" +
+                    "EXECUTION — особые правила:\n" +
+                    "- currentStep: что именно создаётся сейчас (черновик, структура, материалы).\n" +
+                    "- expectedAction: «выдать/доработать результат по плану», не «уточнить цель».\n" +
+                    "- advancePhase=true на execution, когда основной результат готов и пора проверять (→ validation).\n" +
+                    "- Не advancePhase, если результат ещё черновой или пользователь просит доработать.\n\n" +
+                    "VALIDATION — особые правила:\n" +
+                    "- Этап мульти-перспективной проверки готового результата: эксперт, аудитория/слушатель, исполнитель, критик.\n" +
+                    "- Ассистент ОБЯЗАН явно отчитаться о проверке: в ответе должен быть блок «Отчёт о проверке» с итогами по перспективам.\n" +
+                    "- expectedAction: «отчитаться о проверке как эксперт», «добавить в отчёт оценку аудитории», " +
+                    "«завершить отчёт и улучшить результат» — в зависимости от того, что ещё не сделано.\n" +
+                    "- currentStep: какая перспектива/аспект проверяется сейчас или «итоговое улучшение».\n" +
+                    "- completedStep: завершённая перспектива проверки (например «проверка экспертом», «оценка аудитории»).\n" +
+                    "- advancePhase=true на validation ТОЛЬКО после явного отчёта о проверке, проверки с разных ролей И предложенных улучшений, " +
+                    "или если пользователь явно доволен («всё ок», «принимаю»).\n" +
+                    "- Не advancePhase, если проверка поверхностная или пользователь просит доработать/перепроверить.\n" +
+                    "- openQuestions на validation обычно пуст; не возвращайся к planning-уточнениям без запроса.\n\n" +
+                    "Для болтовни без задачи: activate=false и пустые поля."
+            )
+        }
+        val userPayload = buildString {
+            appendLine("Текущее состояние задачи:")
+            appendLine("isActive: ${currentState.isActive}")
+            appendLine("phase: ${currentState.phase.name}")
+            appendLine("taskGoal: ${currentState.taskGoal ?: "(нет)"}")
+            appendLine("currentStep: ${currentState.currentStep.ifBlank { "(нет)" }}")
+            appendLine("expectedAction: ${currentState.expectedAction.ifBlank { "(нет)" }}")
+            appendLine("completedSteps: ${currentState.completedSteps.joinToString("; ").ifBlank { "(нет)" }}")
+            appendLine("openQuestions: ${currentState.openQuestions.joinToString("; ").ifBlank { "(нет)" }}")
+            appendLine("planningFacts: ${gsonLocal.toJson(currentState.planningFacts)}")
+            appendLine("Последние реплики:")
+            appendLine(contextLines.ifBlank { "(нет)" })
+            appendLine("Новое сообщение пользователя:")
+            appendLine(newUserMessage)
+        }
+        val request = DeepSeekRequest(
+            model = modelId,
+            messages = listOf(
+                ChatMessage(role = "system", content = system),
+                ChatMessage(role = "user", content = userPayload)
+            ),
+            stream = false,
+            maxTokens = 768,
+            temperature = 0.2
+        )
+        try {
+            val response = routerAiApi.createChatCompletion(request)
+            if (response.isSuccessful) {
+                val raw = response.body()?.choices?.firstOrNull()?.message?.content?.trim()
+                    ?: return@withContext Result.failure(Exception("Empty task state classification response"))
+                val parsed = parseTaskStateClassificationResponse(raw, gsonLocal)
+                if (parsed != null) Result.success(parsed)
+                else Result.failure(Exception("Failed to parse task state classification JSON"))
+            } else {
+                val err = response.errorBody()?.string() ?: response.message()
+                Result.failure(Exception(err))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun parseTaskStateClassificationResponse(raw: String, gson: Gson): TaskStateClassificationResult? {
+        var t = raw.trim()
+        if (t.startsWith("```")) {
+            t = t.removePrefix("```json").removePrefix("```JSON").removePrefix("```").trim()
+            val endFence = t.lastIndexOf("```")
+            if (endFence >= 0) t = t.substring(0, endFence).trim()
+        }
+        return try {
+            val dto = gson.fromJson(t, TaskStateClassificationDto::class.java) ?: return null
+            TaskStateClassificationResult(
+                activate = dto.activate ?: false,
+                taskGoal = dto.taskGoal,
+                currentStep = dto.currentStep ?: "",
+                expectedAction = dto.expectedAction ?: "",
+                advancePhase = dto.advancePhase ?: false,
+                completedStep = dto.completedStep ?: "",
+                openQuestions = dto.openQuestions,
+                planningFacts = dto.planningFacts ?: emptyMap()
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private data class TaskStateClassificationDto(
+        val activate: Boolean? = null,
+        val taskGoal: String? = null,
+        val currentStep: String? = null,
+        val expectedAction: String? = null,
+        val advancePhase: Boolean? = null,
+        val completedStep: String? = null,
+        val openQuestions: List<String>? = null,
+        val planningFacts: Map<String, String>? = null
+    )
 
     private fun parseMemoryClassificationResponse(raw: String, gson: Gson): MemoryClassificationResult? {
         var t = raw.trim()
