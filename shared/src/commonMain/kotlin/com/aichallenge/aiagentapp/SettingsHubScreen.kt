@@ -28,6 +28,7 @@ import com.aichallenge.aiagentapp.ui.platformSafeAreaModifier
 fun SettingsHubScreen(
     onProfilesClick: () -> Unit,
     onInvariantsClick: () -> Unit,
+    onMcpClick: () -> Unit,
     onBack: () -> Unit
 ) {
     Scaffold(
@@ -58,6 +59,11 @@ fun SettingsHubScreen(
                 title = "Инварианты",
                 subtitle = "Предпочтения и запреты по темам (стек, музыка…)",
                 onClick = onInvariantsClick
+            )
+            SettingsHubItem(
+                title = "MCP",
+                subtitle = "Подключение к MCP-серверу и список доступных инструментов",
+                onClick = onMcpClick
             )
         }
     }

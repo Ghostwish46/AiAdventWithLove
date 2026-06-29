@@ -57,6 +57,9 @@ kotlin {
             implementation(libs.okhttp)
             implementation(libs.okhttp.logging)
             implementation(libs.gson)
+            implementation(libs.mcp.client)
+            implementation(libs.ktor.client.cio)
+            implementation(libs.ktor.sse)
         }
         androidMain.dependencies {
             implementation(libs.androidx.core.ktx)

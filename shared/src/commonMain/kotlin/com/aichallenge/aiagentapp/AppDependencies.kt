@@ -5,13 +5,17 @@ import com.aichallenge.aiagentapp.data.LongTermMemoryStore
 import com.aichallenge.aiagentapp.data.LlmClient
 import com.aichallenge.aiagentapp.data.ModelInfo
 import com.aichallenge.aiagentapp.data.InvariantsStore
+import com.aichallenge.aiagentapp.data.McpSettingsStore
 import com.aichallenge.aiagentapp.data.ProfileCatalogStore
+import com.aichallenge.aiagentapp.mcp.McpConnectionTester
 
 data class AppDependencies(
     val conversationRepository: ConversationStore,
     val longTermMemoryRepository: LongTermMemoryStore,
     val profileCatalogRepository: ProfileCatalogStore,
     val invariantsRepository: InvariantsStore,
+    val mcpSettingsStore: McpSettingsStore,
+    val mcpConnectionTester: McpConnectionTester,
     val deepSeekRepository: LlmClient,
     val modelInfo: ModelInfo,
     val systemPrompt: String

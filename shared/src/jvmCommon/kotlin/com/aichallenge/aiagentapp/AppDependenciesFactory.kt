@@ -4,9 +4,11 @@ import com.aichallenge.aiagentapp.data.ConversationRepository
 import com.aichallenge.aiagentapp.data.DeepSeekRepository
 import com.aichallenge.aiagentapp.data.LongTermMemoryRepository
 import com.aichallenge.aiagentapp.data.InvariantsRepository
+import com.aichallenge.aiagentapp.data.McpSettingsRepository
 import com.aichallenge.aiagentapp.data.ProfileCatalogRepository
 import com.aichallenge.aiagentapp.data.ModelInfo
 import com.aichallenge.aiagentapp.data.createRouterAiApi
+import com.aichallenge.aiagentapp.mcp.McpConnectionTesterImpl
 
 fun createAppDependencies(
     modelInfo: ModelInfo = defaultModelInfo(),
@@ -18,6 +20,8 @@ fun createAppDependencies(
         longTermMemoryRepository = LongTermMemoryRepository(),
         profileCatalogRepository = ProfileCatalogRepository(),
         invariantsRepository = InvariantsRepository(),
+        mcpSettingsStore = McpSettingsRepository(),
+        mcpConnectionTester = McpConnectionTesterImpl(),
         deepSeekRepository = DeepSeekRepository(api),
         modelInfo = modelInfo,
         systemPrompt = systemPrompt

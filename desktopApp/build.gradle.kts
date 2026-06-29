@@ -24,3 +24,10 @@ compose.desktop {
         }
     }
 }
+
+tasks.register<JavaExec>("runMcpDemo") {
+    group = "application"
+    description = "Connect to MCP and list tools"
+    mainClass.set("com.aichallenge.aiagentapp.McpDemoMainKt")
+    classpath = sourceSets["main"].runtimeClasspath
+}

@@ -85,6 +85,7 @@ fun App(deps: AppDependencies) {
                         SettingsHubScreen(
                             onProfilesClick = { navController.navigate("settings/profiles") },
                             onInvariantsClick = { navController.navigate("settings/invariants") },
+                            onMcpClick = { navController.navigate("settings/mcp") },
                             onBack = { navController.popBackStack() }
                         )
                     }
@@ -101,6 +102,18 @@ fun App(deps: AppDependencies) {
                         InvariantsScreen(
                             viewModel = invariantsViewModel,
                             navController = navController
+                        )
+                    }
+                    composable("settings/mcp") {
+                        val mcpSettingsViewModel: McpSettingsViewModel = viewModel {
+                            McpSettingsViewModel(
+                                settingsStore = deps.mcpSettingsStore,
+                                connectionTester = deps.mcpConnectionTester,
+                            )
+                        }
+                        McpSettingsScreen(
+                            viewModel = mcpSettingsViewModel,
+                            navController = navController,
                         )
                     }
                     composable(
