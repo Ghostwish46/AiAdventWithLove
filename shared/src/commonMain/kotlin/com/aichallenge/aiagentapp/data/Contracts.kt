@@ -1,6 +1,10 @@
 package com.aichallenge.aiagentapp.data
 
+import com.aichallenge.aiagentapp.agent.invariant.InvariantBlock
+import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
+import com.aichallenge.aiagentapp.agent.prompt.PromptContextDecision
 import com.aichallenge.aiagentapp.agent.task.TaskState
+import com.aichallenge.aiagentapp.agent.validation.ValidationResult
 
 sealed class StreamEvent {
     data class Chunk(val text: String) : StreamEvent()
@@ -27,11 +31,20 @@ data class TaskStateClassificationResult(
     val currentStep: String = "",
     val expectedAction: String = "",
     val advancePhase: Boolean = false,
+    val requestedPhase: String? = null,
     val completedStep: String = "",
-    /** Полный актуальный список открытых вопросов; null — не менять. */
     val openQuestions: List<String>? = null,
-    /** Новые/обновлённые факты planning (мержатся в state). */
-    val planningFacts: Map<String, String> = emptyMap()
+    val planningFacts: Map<String, String> = emptyMap(),
+    val planApproved: Boolean = false,
+    val executionResultReady: Boolean = false,
+    val validationReported: Boolean = false
+)
+
+data class InvariantConflictResult(
+    val hasConflict: Boolean = false,
+    val violatedRuleTexts: List<String> = emptyList(),
+    val conflictSummary: String = "",
+    val suggestedAlternative: String = ""
 )
 
 interface LlmClient {
@@ -57,6 +70,27 @@ interface LlmClient {
         recentContext: List<ChatMessage>,
         modelId: String
     ): Result<TaskStateClassificationResult>
+    suspend fun classifyPromptContext(
+        userMessage: String,
+        assistantProfile: AssistantProfile,
+        invariantBlocks: List<InvariantBlock>,
+        taskState: TaskState,
+        recentContext: List<ChatMessage>,
+        modelId: String
+    ): Result<PromptContextDecision>
+    suspend fun classifyInvariantConflict(
+        userMessage: String,
+        relevantBlocks: List<InvariantBlock>,
+        modelId: String
+    ): Result<InvariantConflictResult>
+    suspend fun validateAssistantResponse(
+        response: String,
+        userMessage: String,
+        relevantBlocks: List<InvariantBlock>,
+        taskState: TaskState,
+        includeTaskState: Boolean,
+        modelId: String
+    ): Result<ValidationResult>
 }
 
 interface ConversationStore {

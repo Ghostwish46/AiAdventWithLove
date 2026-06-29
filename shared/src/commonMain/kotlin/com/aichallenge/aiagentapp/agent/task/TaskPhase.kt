@@ -14,6 +14,14 @@ enum class TaskPhase {
             DONE -> "завершено"
         }
 
+    val displayDescription: String
+        get() = when (this) {
+            PLANNING -> "Собираем требования. Утверждаем план."
+            EXECUTION -> "Пишем код. Создаём артефакты."
+            VALIDATION -> "Тесты, ревью. Соответствие плану."
+            DONE -> "Задача завершена. Фиксируем результат."
+        }
+
     fun next(): TaskPhase? = when (this) {
         PLANNING -> EXECUTION
         EXECUTION -> VALIDATION

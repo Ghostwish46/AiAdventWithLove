@@ -10,7 +10,11 @@ data class TaskState(
     /** Вопросы planning-этапа, на которые ещё нет ответа. */
     val openQuestions: List<String> = emptyList(),
     /** Собранные на planning ответы и факты (ключ → значение). */
-    val planningFacts: Map<String, String> = emptyMap()
+    val planningFacts: Map<String, String> = emptyMap(),
+    val planApproved: Boolean = false,
+    val executionResultReady: Boolean = false,
+    val validationReported: Boolean = false,
+    val blockedTransition: BlockedTransition? = null
 ) {
     companion object {
         fun inactive(): TaskState = TaskState(isActive = false)

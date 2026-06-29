@@ -21,7 +21,7 @@ import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.agent.profile.ProfileCatalog
 import com.aichallenge.aiagentapp.data.parseBranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.parseStickyFactsJson
-import com.aichallenge.aiagentapp.data.parseTaskStateJson
+import com.aichallenge.aiagentapp.data.parseTaskStatePayload
 import com.aichallenge.aiagentapp.data.parseWorkingMemoryJson
 import kotlinx.coroutines.launch
 
@@ -34,6 +34,20 @@ fun App(deps: AppDependencies) {
     }
     val profileCatalog = remember(deps.profileCatalogRepository) {
         createProfileCatalog(deps.profileCatalogRepository)
+    }
+    val invariantsCatalog = remember(deps.invariantsRepository) {
+        createInvariantsCatalog(deps.invariantsRepository)
+    }
+
+    fun reloadInvariantsCatalog() {
+        invariantsCatalog.replaceAll(deps.invariantsRepository.loadBlocks())
+    }
+
+    val invariantsViewModel: InvariantsViewModel = viewModel {
+        InvariantsViewModel(
+            invariantsStore = deps.invariantsRepository,
+            onPersisted = { reloadInvariantsCatalog() }
+        )
     }
 
     @Suppress("UnusedMaterial3ScaffoldPaddingParameter")
@@ -68,12 +82,49 @@ fun App(deps: AppDependencies) {
                         )
                     }
                     composable("settings") {
+                        SettingsHubScreen(
+                            onProfilesClick = { navController.navigate("settings/profiles") },
+                            onInvariantsClick = { navController.navigate("settings/invariants") },
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable("settings/profiles") {
                         val settingsViewModel: SettingsViewModel = viewModel {
                             SettingsViewModel(deps.profileCatalogRepository)
                         }
                         SettingsScreen(
                             viewModel = settingsViewModel,
                             navController = navController
+                        )
+                    }
+                    composable("settings/invariants") {
+                        InvariantsScreen(
+                            viewModel = invariantsViewModel,
+                            navController = navController
+                        )
+                    }
+                    composable(
+                        route = "settings/invariants/create/{sessionKey}",
+                        arguments = listOf(navArgument("sessionKey") { type = NavType.StringType })
+                    ) { backStackEntry ->
+                        val sessionKey = backStackEntry.arguments?.getString("sessionKey") ?: "create"
+                        InvariantBlockEditorScreen(
+                            viewModel = invariantsViewModel,
+                            navController = navController,
+                            blockId = null,
+                            editorKey = sessionKey
+                        )
+                    }
+                    composable(
+                        route = "settings/invariants/{blockId}",
+                        arguments = listOf(navArgument("blockId") { type = NavType.StringType })
+                    ) { backStackEntry ->
+                        val blockId = backStackEntry.arguments?.getString("blockId")
+                        InvariantBlockEditorScreen(
+                            viewModel = invariantsViewModel,
+                            navController = navController,
+                            blockId = blockId,
+                            editorKey = blockId ?: "edit"
                         )
                     }
                     composable("settings/profile/new") {
@@ -115,6 +166,7 @@ fun App(deps: AppDependencies) {
                         val profileId = backStackEntry.arguments?.getString("profileId")
                         val strategy = ContextStrategy.fromSavedName(strategyName)
                         profileCatalog.updateCustomProfiles(deps.profileCatalogRepository.loadCustomProfiles())
+                        reloadInvariantsCatalog()
                         val assistantProfile = profileCatalog.resolve(profileId)
                         val chatViewModel: ChatViewModel = viewModel(key = "new_${strategyName}_$profileId") {
                             val agent = SimpleAgent(
@@ -127,7 +179,8 @@ fun App(deps: AppDependencies) {
                                 } else {
                                     null
                                 },
-                                assistantProfile = assistantProfile
+                                assistantProfile = assistantProfile,
+                                invariantsCatalog = invariantsCatalog
                             )
                             ChatViewModel(
                                 agent = agent,
@@ -154,6 +207,7 @@ fun App(deps: AppDependencies) {
                             val savedMessages = conv?.messages ?: emptyList()
                             val savedStrategy = ContextStrategy.fromSavedName(conv?.contextStrategy)
                             profileCatalog.updateCustomProfiles(deps.profileCatalogRepository.loadCustomProfiles())
+                            reloadInvariantsCatalog()
                             val assistantProfile = profileCatalog.resolve(conv?.profileId)
                             val initialBranching =
                                 if (savedStrategy == ContextStrategy.BRANCHING) {
@@ -183,7 +237,7 @@ fun App(deps: AppDependencies) {
                                 } else {
                                     com.aichallenge.aiagentapp.agent.memory.WorkingMemory()
                                 }
-                            val initialTaskState = parseTaskStateJson(conv?.taskStateJson)
+                            val taskPayload = parseTaskStatePayload(conv?.taskStateJson)
                             val agent = SimpleAgent(
                                 repository = deps.deepSeekRepository,
                                 modelInfo = deps.modelInfo,
@@ -199,7 +253,9 @@ fun App(deps: AppDependencies) {
                                     null
                                 },
                                 assistantProfile = assistantProfile,
-                                initialTaskState = initialTaskState
+                                initialTaskState = taskPayload.state,
+                                initialTaskFsmScope = taskPayload.fsmScope,
+                                invariantsCatalog = invariantsCatalog
                             )
                             val initialMessages = if (initialBranching != null) {
                                 emptyList()

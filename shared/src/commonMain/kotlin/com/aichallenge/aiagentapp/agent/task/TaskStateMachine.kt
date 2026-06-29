@@ -8,15 +8,19 @@ class TaskStateMachine(initial: TaskState = TaskState.inactive()) {
 
     fun snapshot(): TaskState = state
 
-    fun advancePhase(): TaskState {
-        if (!state.isActive || state.phase == TaskPhase.DONE) return state
-        val next = state.phase.next() ?: return state
-        state = state.copy(phase = next)
+    fun clearBlockedTransition(): TaskState {
+        state = state.copy(blockedTransition = null)
         return state
     }
 
+    fun advancePhase(): TaskState {
+        if (!state.isActive || state.phase == TaskPhase.DONE) return state
+        val next = state.phase.next() ?: return state
+        return applyTransition(next)
+    }
+
     fun applyClassification(result: TaskStateClassificationResult): TaskState {
-        if (!result.activate && !state.isActive) return state
+        if (!result.activate) return state
 
         var updated = state
         if (result.activate && !state.isActive) {
@@ -47,16 +51,52 @@ class TaskStateMachine(initial: TaskState = TaskState.inactive()) {
         if (result.planningFacts.isNotEmpty()) {
             updated = updated.copy(planningFacts = updated.planningFacts + result.planningFacts)
         }
-        if (result.advancePhase && updated.phase != TaskPhase.DONE) {
-            val canAdvanceFromPlanning =
-                updated.phase != TaskPhase.PLANNING || updated.openQuestions.isEmpty()
-            if (canAdvanceFromPlanning) {
-                updated = updated.copy(phase = updated.phase.next() ?: TaskPhase.DONE)
-            }
+        if (result.planApproved) {
+            updated = updated.copy(planApproved = true)
         }
-        state = updated
+        if (result.executionResultReady) {
+            updated = updated.copy(executionResultReady = true)
+        }
+        if (result.validationReported) {
+            updated = updated.copy(validationReported = true)
+        }
+
+        val requestedPhase = result.requestedPhase?.let { name ->
+            runCatching { TaskPhase.valueOf(name.uppercase()) }.getOrNull()
+        }
+        if (requestedPhase != null) {
+            updated = applyTransitionToState(updated, requestedPhase)
+        } else if (result.advancePhase && updated.phase != TaskPhase.DONE) {
+            val next = updated.phase.next()
+            if (next != null) {
+                updated = applyTransitionToState(updated, next)
+            }
+        } else {
+            state = updated.copy(blockedTransition = null)
+        }
         return state
     }
+
+    private fun applyTransition(target: TaskPhase): TaskState {
+        state = applyTransitionToState(state, target)
+        return state
+    }
+
+    private fun applyTransitionToState(current: TaskState, target: TaskPhase): TaskState =
+        when (val result = TaskPhaseTransitions.transition(current, target)) {
+            is TransitionResult.Allowed -> {
+                state = result.newState
+                result.newState
+            }
+            is TransitionResult.Blocked -> {
+                state = result.state
+                result.state
+            }
+            is TransitionResult.NoChange -> {
+                state = result.state
+                result.state
+            }
+        }
 
     fun reset() {
         state = TaskState.inactive()

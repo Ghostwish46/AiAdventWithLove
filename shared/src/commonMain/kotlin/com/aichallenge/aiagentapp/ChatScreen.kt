@@ -59,7 +59,9 @@ import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
 import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
+import com.aichallenge.aiagentapp.agent.invariant.InvariantBlock
 import com.aichallenge.aiagentapp.agent.task.TaskPhase
+import com.aichallenge.aiagentapp.agent.task.TaskPhaseTransitions
 import com.aichallenge.aiagentapp.agent.task.TaskState
 import com.aichallenge.aiagentapp.data.Usage
 import com.aichallenge.aiagentapp.platform.platformCopyToClipboard
@@ -270,7 +272,15 @@ fun ChatScreen(
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        TaskStatePanel(taskState = state.taskState)
+                        TaskStatePanel(
+                            taskState = state.taskState,
+                            blockedMessage = state.blockedTransitionMessage
+                        )
+                        InvariantsPanel(
+                            blocks = state.activeInvariantBlocks,
+                            relevanceReason = state.relevanceReason,
+                            reworkStatus = state.reworkStatus
+                        )
                         DialogSummary(
                             lastRequestContextTokens = lastRequestContextTokens,
                             totalTokensInDialog = totalTokensInDialog,
@@ -634,7 +644,7 @@ private fun DialogSummary(
 }
 
 @Composable
-private fun TaskStatePanel(taskState: TaskState) {
+private fun TaskStatePanel(taskState: TaskState, blockedMessage: String? = null) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -656,6 +666,36 @@ private fun TaskStatePanel(taskState: TaskState) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             return@Column
+        }
+        Text(
+            text = taskState.phase.displayDescription,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        val allowed = TaskPhaseTransitions.allowedTargets(taskState.phase)
+        if (allowed.isNotEmpty()) {
+            Text(
+                text = "Переходы: ${allowed.joinToString { it.name }}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        if (taskState.planApproved) {
+            Text(text = "✓ План утверждён", style = MaterialTheme.typography.labelSmall)
+        }
+        if (taskState.executionResultReady) {
+            Text(text = "✓ Результат готов", style = MaterialTheme.typography.labelSmall)
+        }
+        if (taskState.validationReported) {
+            Text(text = "✓ Проверка проведена", style = MaterialTheme.typography.labelSmall)
+        }
+        if (!blockedMessage.isNullOrBlank()) {
+            Text(
+                text = "⚠ $blockedMessage",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Medium
+            )
         }
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             TaskPhase.entries.chunked(2).forEach { rowPhases ->
@@ -721,6 +761,71 @@ private fun TaskStatePanel(taskState: TaskState) {
                 text = "Выполнено:\n$preview",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun InvariantsPanel(
+    blocks: List<InvariantBlock>,
+    relevanceReason: String,
+    reworkStatus: String
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = "Инварианты",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold
+        )
+        if (blocks.isEmpty()) {
+            Text(
+                text = "Для этого запроса блоки не применяются.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            blocks.forEach { block ->
+                Text(
+                    text = block.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                block.rules.take(5).forEach { rule ->
+                    Text(
+                        text = "• ${rule.text}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (block.rules.size > 5) {
+                    Text(
+                        text = "…ещё ${block.rules.size - 5}",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+        }
+        if (relevanceReason.isNotBlank()) {
+            Text(
+                text = relevanceReason,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        if (reworkStatus.isNotBlank()) {
+            Text(
+                text = reworkStatus,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Medium
             )
         }
     }

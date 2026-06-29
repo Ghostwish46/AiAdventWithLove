@@ -6,7 +6,10 @@ import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
 import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
+import com.aichallenge.aiagentapp.agent.invariant.InvariantBlock
+import com.aichallenge.aiagentapp.agent.invariant.InvariantConflictRefusal
 import com.aichallenge.aiagentapp.agent.task.TaskState
+import com.aichallenge.aiagentapp.agent.validation.ValidationResult
 import com.aichallenge.aiagentapp.data.BranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.ChatMessage
 import com.aichallenge.aiagentapp.data.Conversation
@@ -16,12 +19,11 @@ import com.aichallenge.aiagentapp.data.StreamEvent
 import com.aichallenge.aiagentapp.data.Usage
 import com.aichallenge.aiagentapp.data.encodeBranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.encodeStickyFactsJson
-import com.aichallenge.aiagentapp.data.encodeTaskStateJson
+import com.aichallenge.aiagentapp.data.encodeTaskStatePayload
 import com.aichallenge.aiagentapp.data.encodeWorkingMemoryJson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
@@ -54,7 +56,11 @@ data class ChatUiState(
     val memorySnapshot: MemorySnapshot? = null,
     val lastRoutingLog: List<String> = emptyList(),
     val assistantProfile: AssistantProfile = AssistantProfile.NEUTRAL,
-    val taskState: TaskState = TaskState.inactive()
+    val taskState: TaskState = TaskState.inactive(),
+    val activeInvariantBlocks: List<InvariantBlock> = emptyList(),
+    val relevanceReason: String = "",
+    val reworkStatus: String = "",
+    val blockedTransitionMessage: String? = null
 )
 
 class ChatViewModel(
@@ -225,14 +231,41 @@ class ChatViewModel(
                     content = "",
                     isLoading = true
                 ),
-                isLoading = true
+                isLoading = true,
+                reworkStatus = ""
             )
         }
 
         val prior = conversationChatMessagesForPreTurn(includePendingUser = isRetry)
 
-        agent.updateTaskStateForUserMessage(text, prior)
-        _uiState.value = _uiState.value.copy(taskState = agent.getTaskState())
+        agent.prepareTurn(text, prior)
+        val turnCtx = agent.getTurnContext()
+        _uiState.value = _uiState.value.copy(
+            taskState = agent.getTaskState(),
+            activeInvariantBlocks = turnCtx.relevantBlocks,
+            relevanceReason = turnCtx.promptContext.relevanceReason,
+            blockedTransitionMessage = agent.getTaskState().blockedTransition?.reason
+        )
+
+        turnCtx.invariantConflict?.takeIf { it.hasConflict }?.let { conflict ->
+            if (!isRetry) {
+                agent.appendUserMessage(text)
+            }
+            val refusal = InvariantConflictRefusal.buildMessage(conflict)
+            agent.addAssistantMessage(refusal)
+            agent.clearTurnContext()
+            clearStreamingContent()
+            replaceLastMessage(
+                UiMessage(
+                    role = "assistant",
+                    content = refusal,
+                    isLoading = false
+                )
+            )
+            _uiState.value = _uiState.value.copy(isLoading = false, reworkStatus = "")
+            persistConversation()
+            return
+        }
 
         if (strategy == ContextStrategy.FACTS_KV) {
             agent.mergeStickyFactsForUserMessage(text, prior)
@@ -248,65 +281,118 @@ class ChatViewModel(
             )
         }
 
-        val startMs = Clock.System.now().toEpochMilliseconds()
-        agent.processQueryStreaming(text)
-            .catch { e ->
-                clearStreamingContent()
-                agent.rollbackLastUserMessage()
-                replaceLastMessage(
-                    UiMessage(
-                        role = "assistant",
-                        content = e.message ?: "Unknown error",
-                        isError = true
-                    )
-                )
+        if (!isRetry) {
+            agent.appendUserMessage(text)
+        } else {
+            val last = agent.displayMessages().lastOrNull()
+            if (last?.role != "user" || last.content != text) {
+                agent.appendUserMessage(text)
             }
-            .collect { event ->
-                when (event) {
-                    is StreamEvent.Chunk -> {
-                        appendStreamingContent(event.text)
-                        yield()
+        }
+
+        val startMs = Clock.System.now().toEpochMilliseconds()
+        var finalContent: String? = null
+        var finalUsage: Usage? = null
+
+        runCatching {
+            collectStreamingResponse { content, usage ->
+                finalContent = content
+                finalUsage = usage
+            }
+        }.onFailure { e ->
+            clearStreamingContent()
+            agent.rollbackLastUserMessage()
+            agent.clearTurnContext()
+            replaceLastMessage(
+                UiMessage(
+                    role = "assistant",
+                    content = e.message ?: "Unknown error",
+                    isError = true
+                )
+            )
+            return
+        }
+
+        var content = finalContent ?: ""
+        var usage = finalUsage
+        var reworkAttempt = 0
+
+        while (true) {
+            when (val validation = agent.validateResponse(content)) {
+                is ValidationResult.Pass -> {
+                    content = validation.response
+                    break
+                }
+                is ValidationResult.Fail -> {
+                    if (reworkAttempt >= SimpleAgent.MAX_REWORK_ATTEMPTS) {
+                        content = validation.violations.joinToString("\n") { "⚠ $it" } +
+                            "\n\n" + content
+                        break
                     }
-                    is StreamEvent.Done -> {
-                        val elapsedMs = Clock.System.now().toEpochMilliseconds() - startMs
-                        val accumulated = _uiState.value.streamingContent
-                        clearStreamingContent()
-                        val last = _uiState.value.messages.lastOrNull() ?: return@collect
-                        agent.addAssistantMessage(accumulated)
-                        val cost = event.usage?.let { u ->
-                            u.promptTokens.toDouble() / 1_000_000 * (agent.getModelInfo().inputPricePerM) +
-                                u.completionTokens.toDouble() / 1_000_000 * (agent.getModelInfo().outputPricePerM)
-                        }
-                        replaceLastMessage(
-                            last.copy(
-                                content = accumulated,
-                                usage = event.usage,
-                                elapsedMs = elapsedMs,
-                                estimatedCostRub = cost,
-                                isLoading = false
-                            )
-                        )
-                        syncBranchCacheFromDisplay()
-                        if (strategy == ContextStrategy.MEMORY_LAYERS) {
-                            _uiState.value = _uiState.value.copy(
-                                memorySnapshot = agent.getMemorySnapshot()
-                            )
-                        }
-                        persistConversation()
-                    }
-                    is StreamEvent.Error -> {
-                        clearStreamingContent()
-                        agent.rollbackLastUserMessage()
-                        replaceLastMessage(
-                            UiMessage(
-                                role = "assistant",
-                                content = event.message,
-                                isError = true
-                            )
-                        )
-                    }
+                    reworkAttempt++
+                    _uiState.value = _uiState.value.copy(
+                        reworkStatus = "↺ Переработка ответа (${validation.violations.firstOrNull() ?: "нарушение"})"
+                    )
+                    agent.setReworkViolations(validation.violations)
+                    val regen = agent.generateNonStreaming().getOrElse { throw it }
+                    content = regen.content
+                    usage = regen.usage ?: usage
                 }
             }
+        }
+
+        val elapsedMs = Clock.System.now().toEpochMilliseconds() - startMs
+        clearStreamingContent()
+        val last = _uiState.value.messages.lastOrNull() ?: return
+        agent.addAssistantMessage(content)
+        agent.clearTurnContext()
+        val cost = usage?.let { u ->
+            u.promptTokens.toDouble() / 1_000_000 * agent.getModelInfo().inputPricePerM +
+                u.completionTokens.toDouble() / 1_000_000 * agent.getModelInfo().outputPricePerM
+        }
+        replaceLastMessage(
+            last.copy(
+                content = content,
+                usage = usage,
+                elapsedMs = elapsedMs,
+                estimatedCostRub = cost,
+                isLoading = false
+            )
+        )
+        syncBranchCacheFromDisplay()
+        if (strategy == ContextStrategy.MEMORY_LAYERS) {
+            _uiState.value = _uiState.value.copy(
+                memorySnapshot = agent.getMemorySnapshot(),
+                reworkStatus = "",
+                taskState = agent.getTaskState()
+            )
+        } else {
+            _uiState.value = _uiState.value.copy(
+                reworkStatus = "",
+                taskState = agent.getTaskState(),
+                blockedTransitionMessage = null
+            )
+        }
+        persistConversation()
+    }
+
+    private suspend fun collectStreamingResponse(onDone: (String, Usage?) -> Unit) {
+        val accumulated = StringBuilder()
+        var usage: Usage? = null
+        agent.processQueryStreaming().collect { event ->
+            when (event) {
+                is StreamEvent.Chunk -> {
+                    accumulated.append(event.text)
+                    appendStreamingContent(event.text)
+                    yield()
+                }
+                is StreamEvent.Done -> {
+                    usage = event.usage
+                }
+                is StreamEvent.Error -> throw Exception(event.message)
+            }
+        }
+        onDone(accumulated.toString(), usage)
     }
 
     private fun conversationChatMessagesForPreTurn(includePendingUser: Boolean): List<ChatMessage> {
@@ -418,7 +504,7 @@ class ChatViewModel(
             branchingJson = branchingJson,
             workingMemoryJson = workingMemoryJson,
             profileId = agent.getAssistantProfile().id.takeIf { it != AssistantProfile.ID_NEUTRAL },
-            taskStateJson = encodeTaskStateJson(agent.getTaskState())
+            taskStateJson = encodeTaskStatePayload(agent.getTaskState(), agent.getTaskFsmScope())
         )
         conversationRepository.save(conversation)
     }

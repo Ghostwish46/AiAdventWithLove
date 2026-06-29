@@ -4,12 +4,14 @@ import com.aichallenge.aiagentapp.data.ConversationStore
 import com.aichallenge.aiagentapp.data.LongTermMemoryStore
 import com.aichallenge.aiagentapp.data.LlmClient
 import com.aichallenge.aiagentapp.data.ModelInfo
+import com.aichallenge.aiagentapp.data.InvariantsStore
 import com.aichallenge.aiagentapp.data.ProfileCatalogStore
 
 data class AppDependencies(
     val conversationRepository: ConversationStore,
     val longTermMemoryRepository: LongTermMemoryStore,
     val profileCatalogRepository: ProfileCatalogStore,
+    val invariantsRepository: InvariantsStore,
     val deepSeekRepository: LlmClient,
     val modelInfo: ModelInfo,
     val systemPrompt: String

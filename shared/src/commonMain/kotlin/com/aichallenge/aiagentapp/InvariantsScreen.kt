@@ -27,29 +27,28 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
-import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
-import com.aichallenge.aiagentapp.ui.ProfileAvatar
+import com.aichallenge.aiagentapp.agent.invariant.InvariantBlock
 import com.aichallenge.aiagentapp.ui.platformSafeAreaModifier
+import kotlinx.datetime.Clock
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(
-    viewModel: SettingsViewModel,
+fun InvariantsScreen(
+    viewModel: InvariantsViewModel,
     navController: NavController
 ) {
-    val customProfiles by viewModel.customProfiles.collectAsState()
+    val blocks by viewModel.blocks.collectAsState()
 
-    LaunchedEffect(navController.currentBackStackEntry?.destination?.route) {
-        if (navController.currentBackStackEntry?.destination?.route == "settings/profiles") {
-            viewModel.reload()
-        }
+    DisposableEffect(Unit) {
+        viewModel.reload()
+        onDispose { }
     }
 
     Scaffold(
@@ -58,7 +57,7 @@ fun SettingsScreen(
             .then(platformSafeAreaModifier()),
         topBar = {
             TopAppBar(
-                title = { Text("Персоны ассистента") },
+                title = { Text("Инварианты") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
@@ -67,8 +66,14 @@ fun SettingsScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { navController.navigate("settings/profile/new") }) {
-                Icon(Icons.Default.Add, contentDescription = "Добавить профиль")
+            FloatingActionButton(
+                onClick = {
+                    navController.navigate(
+                        "settings/invariants/create/${Clock.System.now().toEpochMilliseconds()}"
+                    )
+                }
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Добавить блок")
             }
         }
     ) { padding ->
@@ -79,18 +84,18 @@ fun SettingsScreen(
                 .padding(horizontal = 16.dp)
         ) {
             Text(
-                text = "Кастомные профили",
+                text = "Строгие ограничения для релевантных запросов",
                 style = MaterialTheme.typography.titleMedium
             )
             Text(
-                text = "Создайте свои персоны ассистента. Они появятся при создании нового диалога.",
+                text = "Каждое правило обязательно: язык, стек, жанр — строго как указано. «Kotlin» = только Kotlin, «symphonic metal» = только этот жанр.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(12.dp))
-            if (customProfiles.isEmpty()) {
+            if (blocks.isEmpty()) {
                 Text(
-                    text = "Пока нет кастомных профилей. Нажмите + чтобы добавить.",
+                    text = "Нет блоков. Нажмите + чтобы добавить.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 24.dp)
@@ -100,11 +105,11 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(bottom = 80.dp)
                 ) {
-                    items(customProfiles, key = { it.id }) { profile ->
-                        CustomProfileItem(
-                            profile = profile,
-                            onClick = { navController.navigate("settings/profile/${profile.id}") },
-                            onDelete = { viewModel.deleteProfile(profile.id) }
+                    items(blocks, key = { it.id }) { block ->
+                        InvariantBlockItem(
+                            block = block,
+                            onClick = { navController.navigate("settings/invariants/${block.id}") },
+                            onDelete = { viewModel.deleteBlock(block.id) }
                         )
                     }
                 }
@@ -114,8 +119,8 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun CustomProfileItem(
-    profile: AssistantProfile,
+private fun InvariantBlockItem(
+    block: InvariantBlock,
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -131,19 +136,20 @@ private fun CustomProfileItem(
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            ProfileAvatar(profile = profile, size = 48.dp)
-            Spacer(modifier = Modifier.padding(horizontal = 12.dp))
             Column(modifier = Modifier.weight(1f)) {
+                Text(text = block.title, style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    text = profile.label,
-                    style = MaterialTheme.typography.bodyLarge
+                    text = "${block.rules.size} правил" +
+                        if (!block.enabled) " · выключен" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (profile.communicationStyle.isNotBlank()) {
+                if (block.domainHint.isNotBlank()) {
                     Text(
-                        text = profile.communicationStyle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2
+                        text = block.domainHint,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1
                     )
                 }
             }

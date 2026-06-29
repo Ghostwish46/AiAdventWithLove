@@ -1,5 +1,7 @@
 package com.aichallenge.aiagentapp.agent
 
+import com.aichallenge.aiagentapp.agent.invariant.InvariantPromptBuilder
+import com.aichallenge.aiagentapp.agent.invariant.InvariantsCatalog
 import com.aichallenge.aiagentapp.agent.memory.AgentMemory
 import com.aichallenge.aiagentapp.agent.memory.MemoryPromptBuilder
 import com.aichallenge.aiagentapp.agent.memory.MemoryRouter
@@ -7,18 +9,23 @@ import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
 import com.aichallenge.aiagentapp.agent.memory.WorkingMemory
 import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
 import com.aichallenge.aiagentapp.agent.profile.ProfilePromptBuilder
+import com.aichallenge.aiagentapp.agent.prompt.PromptContextDecision
+import com.aichallenge.aiagentapp.agent.prompt.PromptRelevanceRouter
+import com.aichallenge.aiagentapp.agent.task.TaskFsmScope
 import com.aichallenge.aiagentapp.agent.task.TaskState
+import com.aichallenge.aiagentapp.agent.task.TaskStateActivationPolicy
 import com.aichallenge.aiagentapp.agent.task.TaskStateMachine
 import com.aichallenge.aiagentapp.agent.task.TaskStatePromptBuilder
+import com.aichallenge.aiagentapp.agent.validation.ValidationResult
 import com.aichallenge.aiagentapp.DEFAULT_SYSTEM_PROMPT
 import com.aichallenge.aiagentapp.data.AgentTurnResult
 import com.aichallenge.aiagentapp.data.ChatMessage
+import com.aichallenge.aiagentapp.data.InvariantConflictResult
 import com.aichallenge.aiagentapp.data.LlmClient
 import com.aichallenge.aiagentapp.data.LongTermMemoryStore
 import com.aichallenge.aiagentapp.data.ModelInfo
 import com.aichallenge.aiagentapp.data.StreamEvent
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flowOf
 
 class SimpleAgent(
     private val repository: LlmClient,
@@ -31,32 +38,36 @@ class SimpleAgent(
     initialWorkingMemory: WorkingMemory = WorkingMemory(),
     private val longTermMemoryStore: LongTermMemoryStore? = null,
     private val assistantProfile: AssistantProfile = AssistantProfile.NEUTRAL,
-    initialTaskState: TaskState = TaskState.inactive()
+    initialTaskState: TaskState = TaskState.inactive(),
+    initialTaskFsmScope: TaskFsmScope = TaskFsmScope.UNDECIDED,
+    private val invariantsCatalog: InvariantsCatalog = InvariantsCatalog()
 ) {
     companion object {
         const val KEEP_LAST_MESSAGES = 8
+        const val MAX_REWORK_ATTEMPTS = 2
     }
 
     private val contextStrategyInternal = initialContextStrategy
-
-    /** Линейная лента до checkpoint (или вся лента для SLIDING/FACTS/MEMORY). */
     private val linearMessages = mutableListOf<ChatMessage>()
-
-    /** Окно API для SLIDING / FACTS (до ветвления у BRANCHING — то же). */
     private val windowForApi = mutableListOf<ChatMessage>()
-
     private val stickyFacts = LinkedHashMap<String, String>().apply { putAll(initialStickyFacts) }
-
     private var branchingState: BranchingState? = initialBranching
-
     private val taskStateMachine = TaskStateMachine(initialTaskState)
+    private var taskFsmScope: TaskFsmScope = resolveInitialFsmScope(
+        initialTaskFsmScope,
+        initialTaskState,
+        initialHistory
+    )
+    private var turnContext: AgentTurnContext = AgentTurnContext()
+    private var lastUserMessage: String = ""
 
     private val agentMemory: AgentMemory? =
         if (contextStrategyInternal == ContextStrategy.MEMORY_LAYERS) {
             AgentMemory(
                 maxShortTermMessages = KEEP_LAST_MESSAGES,
                 initialWorking = initialWorkingMemory,
-                initialLongTerm = longTermMemoryStore?.load() ?: com.aichallenge.aiagentapp.agent.memory.LongTermMemory(),
+                initialLongTerm = longTermMemoryStore?.load()
+                    ?: com.aichallenge.aiagentapp.agent.memory.LongTermMemory(),
                 initialHistory = initialHistory
             )
         } else {
@@ -66,9 +77,7 @@ class SimpleAgent(
     init {
         when (contextStrategyInternal) {
             ContextStrategy.BRANCHING -> {
-                if (branchingState != null) {
-                    // восстановление: linear не используется
-                } else {
+                if (branchingState == null) {
                     linearMessages.addAll(initialHistory)
                     syncWindowFromLinear()
                 }
@@ -84,41 +93,189 @@ class SimpleAgent(
     }
 
     fun getContextStrategy(): ContextStrategy = contextStrategyInternal
-
     fun getAssistantProfile(): AssistantProfile = assistantProfile
-
+    fun getInvariantsCatalog(): InvariantsCatalog = invariantsCatalog
+    fun getTurnContext(): AgentTurnContext = turnContext
     fun getRollingSummary(): String = ""
-
     fun getStickyFactsMap(): Map<String, String> = stickyFacts.toMap()
-
     fun getStickyFactsDisplay(): String =
         if (stickyFacts.isEmpty()) "" else stickyFacts.entries.joinToString("\n") { "${it.key}: ${it.value}" }
-
     fun getWorkingMemory(): WorkingMemory = agentMemory?.getWorkingMemory() ?: WorkingMemory()
-
     fun getMemorySnapshot(): MemorySnapshot? = agentMemory?.snapshot()
-
     fun getBranchingState(): BranchingState? = branchingState
-
     fun isBranched(): Boolean = branchingState?.isActive == true
-
     fun getTaskState(): TaskState = taskStateMachine.snapshot()
-
+    fun getTaskFsmScope(): TaskFsmScope = taskFsmScope
     fun advanceTaskPhase(): TaskState = taskStateMachine.advancePhase()
+
+    private fun resolveInitialFsmScope(
+        savedScope: TaskFsmScope,
+        savedState: TaskState,
+        history: List<ChatMessage>
+    ): TaskFsmScope {
+        if (savedScope != TaskFsmScope.UNDECIDED) return savedScope
+        if (savedState.isActive) return TaskFsmScope.ENABLED
+        if (history.any { it.role == "user" }) return TaskFsmScope.DISABLED
+        return TaskFsmScope.UNDECIDED
+    }
+
+    private fun computeApplyTaskStateThisTurn(userMessage: String): Boolean {
+        if (taskFsmScope != TaskFsmScope.ENABLED) return false
+        return TaskStateActivationPolicy.shouldApplyFsmOnTurn(
+            userMessage,
+            taskStateMachine.snapshot()
+        )
+    }
+
+    suspend fun prepareTurn(userMessage: String, conversationSoFar: List<ChatMessage>) {
+        lastUserMessage = userMessage
+        turnContext = AgentTurnContext()
+
+        updateTaskStateForUserMessage(userMessage, conversationSoFar)
+        val applyTaskState = computeApplyTaskStateThisTurn(userMessage)
+
+        val enabledBlocks = invariantsCatalog.enabledBlocks()
+        val decision = repository.classifyPromptContext(
+            userMessage = userMessage,
+            assistantProfile = assistantProfile,
+            invariantBlocks = enabledBlocks,
+            taskState = taskStateMachine.snapshot(),
+            recentContext = conversationSoFar,
+            modelId = modelInfo.id
+        ).getOrElse {
+            PromptRelevanceRouter.fallbackDecision(
+                userMessage,
+                assistantProfile,
+                enabledBlocks,
+                applyTaskState
+            )
+        }
+
+        val relevantBlocks = invariantsCatalog.blocksByIds(decision.relevantBlockIds)
+        turnContext = turnContext.copy(
+            promptContext = decision.copy(includeTaskState = applyTaskState),
+            relevantBlocks = relevantBlocks,
+            applyTaskStateThisTurn = applyTaskState
+        )
+
+        if (relevantBlocks.isNotEmpty()) {
+            repository.classifyInvariantConflict(
+                userMessage = userMessage,
+                relevantBlocks = relevantBlocks,
+                modelId = modelInfo.id
+            ).onSuccess { conflict ->
+                if (conflict.hasConflict) {
+                    turnContext = turnContext.copy(invariantConflict = conflict)
+                }
+            }
+        }
+    }
+
+    fun setReworkViolations(violations: List<String>) {
+        turnContext = turnContext.copy(reworkViolations = violations)
+    }
+
+    fun clearTurnContext() {
+        taskStateMachine.clearBlockedTransition()
+        turnContext = AgentTurnContext()
+    }
 
     suspend fun updateTaskStateForUserMessage(
         newUserMessage: String,
         conversationSoFar: List<ChatMessage>
     ) {
+        when (taskFsmScope) {
+            TaskFsmScope.DISABLED -> return
+            TaskFsmScope.UNDECIDED -> {
+                if (TaskStateActivationPolicy.isFirstUserTurn(conversationSoFar)) {
+                    resolveFsmScopeOnFirstUserMessage(newUserMessage, conversationSoFar)
+                }
+                return
+            }
+            TaskFsmScope.ENABLED -> Unit
+        }
+
+        val current = taskStateMachine.snapshot()
+        if (!TaskStateActivationPolicy.shouldApplyFsmOnTurn(newUserMessage, current)) {
+            return
+        }
+        if (TaskStateActivationPolicy.shouldSkipClassification(newUserMessage, current)) {
+            return
+        }
+
         repository.classifyTaskStateUpdate(
-            currentState = taskStateMachine.snapshot(),
+            currentState = current,
             newUserMessage = newUserMessage,
             recentContext = conversationSoFar,
             modelId = modelInfo.id
         ).onSuccess { result ->
-            taskStateMachine.applyClassification(result)
+            val sanitized = TaskStateActivationPolicy.sanitize(result, newUserMessage, current)
+            if (sanitized.activate) {
+                taskStateMachine.applyClassification(sanitized)
+            }
         }
     }
+
+    private suspend fun resolveFsmScopeOnFirstUserMessage(
+        message: String,
+        conversationSoFar: List<ChatMessage>
+    ) {
+        val inactive = TaskState.inactive()
+        if (TaskStateActivationPolicy.shouldSkipClassification(message, inactive)) {
+            taskFsmScope = TaskFsmScope.DISABLED
+            taskStateMachine.reset()
+            return
+        }
+
+        repository.classifyTaskStateUpdate(
+            currentState = inactive,
+            newUserMessage = message,
+            recentContext = conversationSoFar,
+            modelId = modelInfo.id
+        ).onSuccess { result ->
+            val sanitized = TaskStateActivationPolicy.sanitize(result, message, inactive)
+            taskFsmScope = if (sanitized.activate) TaskFsmScope.ENABLED else TaskFsmScope.DISABLED
+            if (sanitized.activate) {
+                taskStateMachine.applyClassification(sanitized)
+            } else {
+                taskStateMachine.reset()
+            }
+        }.onFailure {
+            val enabled = TaskStateActivationPolicy.hasProjectIntent(message)
+            taskFsmScope = if (enabled) TaskFsmScope.ENABLED else TaskFsmScope.DISABLED
+            if (enabled) {
+                taskStateMachine.applyClassification(
+                    com.aichallenge.aiagentapp.data.TaskStateClassificationResult(activate = true)
+                )
+            } else {
+                taskStateMachine.reset()
+            }
+        }
+    }
+
+    suspend fun validateResponse(response: String): ValidationResult {
+        val taskState = taskStateMachine.snapshot()
+        val includeTaskState = turnContext.applyTaskStateThisTurn
+        val local = com.aichallenge.aiagentapp.agent.validation.ResponseValidator.validateLocally(
+            response = response,
+            relevantBlocks = turnContext.relevantBlocks,
+            taskState = taskState,
+            includeTaskState = includeTaskState
+        )
+        if (local is ValidationResult.Fail) return local
+
+        return repository.validateAssistantResponse(
+            response = response,
+            userMessage = lastUserMessage,
+            relevantBlocks = turnContext.relevantBlocks,
+            taskState = taskState,
+            includeTaskState = includeTaskState,
+            modelId = modelInfo.id
+        ).getOrElse { ValidationResult.Pass(response) }
+    }
+
+    suspend fun generateNonStreaming(): Result<AgentTurnResult> =
+        repository.sendMessages(buildMessagesForApi(), modelInfo.id)
 
     fun createBranchCheckpoint(): Boolean {
         if (contextStrategyInternal != ContextStrategy.BRANCHING || branchingState != null) return false
@@ -188,21 +345,6 @@ class SimpleAgent(
         store.save(memory.getLongTermMemory())
     }
 
-    suspend fun processQuery(userMessage: String): Result<AgentTurnResult> {
-        if (userMessage.isBlank()) return Result.failure(IllegalArgumentException("Empty message"))
-        val trimmed = userMessage.trim()
-        appendUser(trimmed)
-        val result = repository.sendMessages(buildMessagesForApi(), modelInfo.id)
-        return result.mapCatching { turn ->
-            val cost = turn.usage?.let { u ->
-                u.promptTokens.toDouble() / 1_000_000 * modelInfo.inputPricePerM +
-                    u.completionTokens.toDouble() / 1_000_000 * modelInfo.outputPricePerM
-            }
-            addAssistantMessageInternal(turn.content)
-            turn.copy(estimatedCostRub = cost)
-        }
-    }
-
     fun getHistory(): List<ChatMessage> = displayMessages()
 
     fun displayMessages(): List<ChatMessage> =
@@ -220,14 +362,16 @@ class SimpleAgent(
         addAssistantMessageInternal(content)
     }
 
+    fun appendUserMessage(trimmed: String) {
+        appendUser(trimmed)
+    }
+
     private fun appendUser(trimmed: String) {
         val msg = ChatMessage(role = "user", content = trimmed)
         when {
             contextStrategyInternal == ContextStrategy.BRANCHING && branchingState != null ->
                 appendToActiveBranch(msg)
-            contextStrategyInternal == ContextStrategy.BRANCHING -> {
-                linearMessages.add(msg)
-            }
+            contextStrategyInternal == ContextStrategy.BRANCHING -> linearMessages.add(msg)
             contextStrategyInternal == ContextStrategy.MEMORY_LAYERS -> {
                 linearMessages.add(msg)
                 agentMemory?.appendTurn(msg)
@@ -244,9 +388,7 @@ class SimpleAgent(
         when {
             contextStrategyInternal == ContextStrategy.BRANCHING && branchingState != null ->
                 appendToActiveBranch(msg)
-            contextStrategyInternal == ContextStrategy.BRANCHING -> {
-                linearMessages.add(msg)
-            }
+            contextStrategyInternal == ContextStrategy.BRANCHING -> linearMessages.add(msg)
             contextStrategyInternal == ContextStrategy.MEMORY_LAYERS -> {
                 linearMessages.add(msg)
                 agentMemory?.appendTurn(msg)
@@ -309,14 +451,17 @@ class SimpleAgent(
         }
     }
 
-    fun processQueryStreaming(userMessage: String): Flow<StreamEvent> {
-        if (userMessage.isBlank()) return flowOf(StreamEvent.Error("Empty message"))
-        appendUser(userMessage.trim())
-        return repository.sendMessagesStreaming(buildMessagesForApi(), modelInfo.id)
-    }
+    fun processQueryStreaming(): Flow<StreamEvent> =
+        repository.sendMessagesStreaming(buildMessagesForApi(), modelInfo.id)
 
-    private fun buildMessagesForApi(): List<ChatMessage> = buildList {
-        var systemContent = ProfilePromptBuilder.buildSystemPrompt(systemPrompt, assistantProfile)
+    fun buildMessagesForApi(): List<ChatMessage> = buildList {
+        val ctx = turnContext.promptContext
+        var systemContent = systemPrompt
+
+        if (ctx.includeProfile) {
+            systemContent = ProfilePromptBuilder.buildSystemPrompt(systemContent, assistantProfile)
+        }
+
         systemContent = when (contextStrategyInternal) {
             ContextStrategy.FACTS_KV -> {
                 if (stickyFacts.isNotEmpty()) {
@@ -340,12 +485,33 @@ class SimpleAgent(
             }
             else -> systemContent
         }
-        if (taskStateMachine.snapshot().isActive) {
+
+        if (turnContext.relevantBlocks.isNotEmpty()) {
+            systemContent += "\n\n" + InvariantPromptBuilder.buildInvariantsBlock(turnContext.relevantBlocks)
+            if (turnContext.applyTaskStateThisTurn) {
+                systemContent += InvariantPromptBuilder.appendStateLine(taskStateMachine.snapshot())
+            }
+        }
+
+        if (turnContext.applyTaskStateThisTurn) {
             systemContent = TaskStatePromptBuilder.buildSystemPrompt(
                 systemContent,
                 taskStateMachine.snapshot()
             )
         }
+
+        turnContext.invariantConflict?.let { conflict ->
+            systemContent += InvariantPromptBuilder.buildConflictBlock(
+                conflictSummary = conflict.conflictSummary.ifBlank { "Запрос нарушает инварианты" },
+                violatedRules = conflict.violatedRuleTexts,
+                suggestedAlternative = conflict.suggestedAlternative
+            )
+        }
+
+        if (turnContext.reworkViolations.isNotEmpty()) {
+            systemContent += InvariantPromptBuilder.buildReworkBlock(turnContext.reworkViolations)
+        }
+
         add(ChatMessage(role = "system", content = systemContent))
         addAll(apiPayloadMessages())
     }
@@ -395,5 +561,7 @@ class SimpleAgent(
         branchingState = null
         agentMemory?.clear()
         taskStateMachine.reset()
+        taskFsmScope = TaskFsmScope.UNDECIDED
+        turnContext = AgentTurnContext()
     }
 }

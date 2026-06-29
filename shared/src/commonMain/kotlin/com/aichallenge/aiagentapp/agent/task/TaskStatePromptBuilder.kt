@@ -8,6 +8,7 @@ object TaskStatePromptBuilder {
             append(basePrompt)
             append("\n\n--- СОСТОЯНИЕ ЗАДАЧИ ---")
             append("\nЭтап: ${taskState.phase.name.lowercase()} (${taskState.phase.displayName})")
+            append("\nОписание этапа: ${taskState.phase.displayDescription}")
             if (!taskState.currentStep.isBlank()) {
                 append("\nТекущий шаг: ${taskState.currentStep}")
             }
@@ -38,7 +39,33 @@ object TaskStatePromptBuilder {
                     "\n\nЗадача завершена. Отвечай на уточнения по результату или помогай с новой задачей."
                 )
             }
+            appendTransitionRules(taskState)
+            taskState.blockedTransition?.let { blocked ->
+                appendBlockedTransition(blocked)
+            }
         }
+    }
+
+    private fun StringBuilder.appendTransitionRules(taskState: TaskState) {
+        val allowed = TaskPhaseTransitions.allowedTargets(taskState.phase)
+        append("\n\n--- ПРАВИЛА ПЕРЕХОДОВ МЕЖДУ ЭТАПАМИ ---")
+        append("\nДопустимые переходы из ${taskState.phase.name}: ${allowed.joinToString { it.name }}")
+        append("\n1. Цепочка: planning → execution → validation → done. Skip запрещён.")
+        append("\n2. ЗАПРЕЩЕНО выдавать код/реализацию на planning.")
+        append("\n3. ЗАПРЕЩЕНО завершать (done) без validation.")
+        append("\n4. При запросе недопустимого перехода — откажи и объясни текущий этап.")
+        if (taskState.planApproved) append("\n✓ План утверждён")
+        if (taskState.executionResultReady) append("\n✓ Результат execution готов")
+        if (taskState.validationReported) append("\n✓ Отчёт о проверке проведён")
+    }
+
+    private fun StringBuilder.appendBlockedTransition(blocked: BlockedTransition) {
+        append("\n\n--- ЗАБЛОКИРОВАННЫЙ ПЕРЕХОД ---")
+        append("\nЗапрошен переход: ${blocked.from.name} → ${blocked.requestedTo.name}")
+        append("\nПричина: ${blocked.reason}")
+        append(
+            "\nОтветь пользователю: «${blocked.from.name} → ${blocked.requestedTo.name} запрещён. Сейчас этап ${blocked.from.name}. Сначала: …»"
+        )
     }
 
     private fun StringBuilder.appendPlanningRules(taskState: TaskState) {
@@ -68,6 +95,10 @@ object TaskStatePromptBuilder {
         append(
             "\n7. Переход к execution (готовый план, структура, черновик) — только когда открытых вопросов нет " +
                 "или пользователь явно просит начать работу."
+        )
+        append(
+            "\n8. ЗАПРЕЩЕНО соглашаться, что задача выполнена, если не пройдены execution и validation. " +
+                "Благодарность пользователя («спасибо», «всё понял») — не повод завершать диалог: напомни текущий этап и что осталось."
         )
         when {
             taskState.openQuestions.isEmpty() && taskState.planningFacts.isEmpty() -> append(

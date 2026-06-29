@@ -207,15 +207,26 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
                     "  \"currentStep\": \"...\",\n" +
                     "  \"expectedAction\": \"...\",\n" +
                     "  \"advancePhase\": true/false,\n" +
+                    "  \"requestedPhase\": \"PLANNING|EXECUTION|VALIDATION|DONE|null\",\n" +
                     "  \"completedStep\": \"...\",\n" +
                     "  \"openQuestions\": [\"вопрос 1\", \"вопрос 2\"],\n" +
-                    "  \"planningFacts\": {\"ключ\": \"значение\"}\n" +
+                    "  \"planningFacts\": {\"ключ\": \"значение\"},\n" +
+                    "  \"planApproved\": true/false,\n" +
+                    "  \"executionResultReady\": true/false,\n" +
+                    "  \"validationReported\": true/false\n" +
                     "}\n\n" +
                     "Общие правила:\n" +
                     "- activate=true, если пользователь ставит новую задачу или продолжает текущую\n" +
+                    "- requestedPhase — только СЛЕДУЮЩИЙ допустимый этап или откат (execution→planning, validation→execution). Skip запрещён.\n" +
+                    "- advancePhase=true эквивалентен requestedPhase=следующий этап\n" +
                     "- currentStep — что делаем сейчас; expectedAction — что ассистент должен сделать в СЛЕДУЮЩЕМ ответе\n" +
                     "- completedStep — один завершённый шаг (если есть), иначе пустая строка\n" +
                     "- advancePhase=true только если этап явно завершён (например «план готов, начинай» → execution)\n\n" +
+                    "Когда НЕ активировать FSM (activate=false, requestedPhase=null):\n" +
+                    "- простые одношаговые запросы: «приведи пример», «покажи код», «объясни», «что такое»\n" +
+                    "- мета-вопросы и уточнения к уже данному ответу: «почему?», «зачем?», «как так?», «что значит?»\n" +
+                    "- короткие болтовни и уточнения без явного проекта\n" +
+                    "- FSM нужен только для многошаговых задач: «реализуй приложение», «напиши доклад», «сделай MVP с нуля»\n\n" +
                     "PLANNING — особые правила:\n" +
                     "- openQuestions: полный список вопросов БЕЗ ответа. Обновляй каждый ход.\n" +
                     "- При первом planning-ответе ассистент должен задать СРАЗУ НЕСКОЛЬКО вопросов (3–7) одним списком — все они в openQuestions.\n" +
@@ -243,6 +254,12 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
                     "или если пользователь явно доволен («всё ок», «принимаю»).\n" +
                     "- Не advancePhase, если проверка поверхностная или пользователь просит доработать/перепроверить.\n" +
                     "- openQuestions на validation обычно пуст; не возвращайся к planning-уточнениям без запроса.\n\n" +
+                    "Преждевременное «завершение» (благодарность пользователя):\n" +
+                    "- «Спасибо», «задача выполнена», «всё понял» НЕ означают реальное завершение, если phase ≠ done.\n" +
+                    "- На planning/execution/validation: НЕ ставь requestedPhase=DONE, advancePhase=true, completedStep «Завершено».\n" +
+                    "- Если пользователь благодарит на planning без ответов на openQuestions — openQuestions остаются, phase=planning.\n" +
+                    "- expectedAction при благодарности на planning: «вежливо ответить, но напомнить этап и неотвеченные вопросы / что результат ещё не готов».\n" +
+                    "- Реальный done только после validation с отчётом о проверке.\n\n" +
                     "Для болтовни без задачи: activate=false и пустые поля."
             )
         }
@@ -256,6 +273,13 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
             appendLine("completedSteps: ${currentState.completedSteps.joinToString("; ").ifBlank { "(нет)" }}")
             appendLine("openQuestions: ${currentState.openQuestions.joinToString("; ").ifBlank { "(нет)" }}")
             appendLine("planningFacts: ${gsonLocal.toJson(currentState.planningFacts)}")
+            appendLine("planApproved: ${currentState.planApproved}")
+            appendLine("executionResultReady: ${currentState.executionResultReady}")
+            appendLine("validationReported: ${currentState.validationReported}")
+            appendLine("Допустимые переходы из ${currentState.phase.name}: ${
+                com.aichallenge.aiagentapp.agent.task.TaskPhaseTransitions
+                    .allowedTargets(currentState.phase).joinToString { it.name }
+            }")
             appendLine("Последние реплики:")
             appendLine(contextLines.ifBlank { "(нет)" })
             appendLine("Новое сообщение пользователя:")
@@ -303,9 +327,13 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
                 currentStep = dto.currentStep ?: "",
                 expectedAction = dto.expectedAction ?: "",
                 advancePhase = dto.advancePhase ?: false,
+                requestedPhase = dto.requestedPhase,
                 completedStep = dto.completedStep ?: "",
                 openQuestions = dto.openQuestions,
-                planningFacts = dto.planningFacts ?: emptyMap()
+                planningFacts = dto.planningFacts ?: emptyMap(),
+                planApproved = dto.planApproved ?: false,
+                executionResultReady = dto.executionResultReady ?: false,
+                validationReported = dto.validationReported ?: false
             )
         } catch (_: Exception) {
             null
@@ -318,9 +346,13 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
         val currentStep: String? = null,
         val expectedAction: String? = null,
         val advancePhase: Boolean? = null,
+        val requestedPhase: String? = null,
         val completedStep: String? = null,
         val openQuestions: List<String>? = null,
-        val planningFacts: Map<String, String>? = null
+        val planningFacts: Map<String, String>? = null,
+        val planApproved: Boolean? = null,
+        val executionResultReady: Boolean? = null,
+        val validationReported: Boolean? = null
     )
 
     private fun parseMemoryClassificationResponse(raw: String, gson: Gson): MemoryClassificationResult? {
@@ -430,4 +462,246 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
             emit(StreamEvent.Error(e.message ?: "Stream error"))
         }
     }.flowOn(Dispatchers.IO)
+
+    override suspend fun classifyPromptContext(
+        userMessage: String,
+        assistantProfile: com.aichallenge.aiagentapp.agent.profile.AssistantProfile,
+        invariantBlocks: List<com.aichallenge.aiagentapp.agent.invariant.InvariantBlock>,
+        taskState: TaskState,
+        recentContext: List<ChatMessage>,
+        modelId: String
+    ): Result<com.aichallenge.aiagentapp.agent.prompt.PromptContextDecision> =
+        withContext(Dispatchers.IO) {
+            val blocksDescription = com.aichallenge.aiagentapp.agent.invariant.InvariantBlocksFormatter
+                .formatForClassifier(invariantBlocks)
+            val contextLines = recentContext.takeLast(8).joinToString("\n") { m ->
+                val label = if (m.role == "user") "П" else "А"
+                "$label: ${m.content.take(500)}"
+            }
+            val system = """
+                Ты классификатор релевантности инвариантов для промпта ассистента.
+                Тебе дан список блоков инвариантов (название, domainHint, правила) и сообщение пользователя.
+                Самостоятельно реши, какие блоки относятся к этому вопросу.
+
+                Верни ТОЛЬКО JSON:
+                {
+                  "includeProfile": true/false,
+                  "relevantBlockIds": ["id1", "id2"],
+                  "includeTaskState": true/false,
+                  "relevanceReason": "кратко: почему выбраны эти блоки"
+                }
+
+                Как выбирать relevantBlockIds (семантически):
+                1. Прочитай domainHint и каждое правило блока — правила СТРОГИЕ, не рекомендации.
+                2. Блок релевантен, если запрос относится к его теме ИЛИ может затронуть/нарушить его правила.
+                3. Если пользователь просит альтернативу из другой категории (другой язык, жанр, фреймворк) —
+                   блок с обязательным предпочтением ОБЯЗАТЕЛЬНО включить.
+                4. Учитывай контекст диалога.
+                5. Не включай блок, если запрос полностью в другом домене.
+
+                ${com.aichallenge.aiagentapp.agent.invariant.StrictInvariantPolicy.classifierRules}
+
+                includeProfile: true если нужен стиль/персона для этого вопроса.
+                includeTaskState: true только если для этого хода нужны правила этапа задачи
+                (активная многошаговая задача И сообщение относится к её выполнению, а не простой Q&A).
+                includeTaskState=false для простых вопросов, примеров кода, «почему?», «спасибо» вне контекста задачи.
+            """.trimIndent()
+            val userPayload = buildString {
+                appendLine("Персона: ${assistantProfile.label}")
+                if (assistantProfile.personaDescription.isNotBlank()) {
+                    appendLine("Описание персоны: ${assistantProfile.personaDescription}")
+                }
+                appendLine("Задача активна: ${taskState.isActive}, phase: ${taskState.phase.name}")
+                appendLine()
+                appendLine("=== Блоки инвариантов ===")
+                appendLine(blocksDescription)
+                appendLine()
+                appendLine("=== Последние реплики диалога ===")
+                appendLine(contextLines.ifBlank { "(нет)" })
+                appendLine()
+                appendLine("=== Новое сообщение пользователя ===")
+                appendLine(userMessage)
+            }
+            classifyJsonCall(system, userPayload, modelId) { raw, gson ->
+                val dto = gson.fromJson(stripMarkdownJson(raw), PromptContextDto::class.java) ?: return@classifyJsonCall null
+                val validIds = invariantBlocks.map { it.id }.toSet()
+                val filteredIds = (dto.relevantBlockIds ?: emptyList()).filter { it in validIds }
+                com.aichallenge.aiagentapp.agent.prompt.PromptContextDecision(
+                    includeProfile = dto.includeProfile ?: assistantProfile.isPersona(),
+                    relevantBlockIds = filteredIds,
+                    includeTaskState = dto.includeTaskState ?: false,
+                    relevanceReason = dto.relevanceReason ?: ""
+                )
+            }
+        }
+
+    override suspend fun classifyInvariantConflict(
+        userMessage: String,
+        relevantBlocks: List<com.aichallenge.aiagentapp.agent.invariant.InvariantBlock>,
+        modelId: String
+    ): Result<InvariantConflictResult> = withContext(Dispatchers.IO) {
+        if (relevantBlocks.isEmpty()) {
+            return@withContext Result.success(InvariantConflictResult())
+        }
+        val blocksText = com.aichallenge.aiagentapp.agent.invariant.InvariantBlocksFormatter
+            .formatForClassifier(relevantBlocks)
+        val strictSummary = com.aichallenge.aiagentapp.agent.invariant.StrictRulesExtractor
+            .formatStrictSummary(relevantBlocks)
+        val system = """
+            Ты проверяешь, требует ли запрос пользователя нарушить СТРОГИЕ инварианты.
+            Прочитай каждый блок: название, domainHint, все правила.
+            Верни ТОЛЬКО JSON:
+            {
+              "hasConflict": true/false,
+              "violatedRuleTexts": ["..."],
+              "conflictSummary": "...",
+              "suggestedAlternative": "..."
+            }
+
+            ${com.aichallenge.aiagentapp.agent.invariant.StrictInvariantPolicy.conflictRules}
+        """.trimIndent()
+        val userPayload = buildString {
+            appendLine("=== Блоки инвариантов ===")
+            appendLine(blocksText)
+            if (strictSummary.isNotBlank()) {
+                appendLine()
+                appendLine("=== Строгие ограничения (сводка) ===")
+                appendLine(strictSummary)
+            }
+            appendLine()
+            appendLine("=== Запрос пользователя ===")
+            appendLine(userMessage)
+        }
+        classifyJsonCall(system, userPayload, modelId) { raw, gson ->
+            val dto = gson.fromJson(stripMarkdownJson(raw), InvariantConflictDto::class.java) ?: return@classifyJsonCall null
+            InvariantConflictResult(
+                hasConflict = dto.hasConflict ?: false,
+                violatedRuleTexts = dto.violatedRuleTexts ?: emptyList(),
+                conflictSummary = dto.conflictSummary ?: "",
+                suggestedAlternative = dto.suggestedAlternative ?: ""
+            )
+        }
+    }
+
+    override suspend fun validateAssistantResponse(
+        response: String,
+        userMessage: String,
+        relevantBlocks: List<com.aichallenge.aiagentapp.agent.invariant.InvariantBlock>,
+        taskState: TaskState,
+        includeTaskState: Boolean,
+        modelId: String
+    ): Result<com.aichallenge.aiagentapp.agent.validation.ValidationResult> =
+        withContext(Dispatchers.IO) {
+            val local = com.aichallenge.aiagentapp.agent.validation.ResponseValidator.validateLocally(
+                response = response,
+                relevantBlocks = relevantBlocks,
+                taskState = taskState,
+                includeTaskState = includeTaskState
+            )
+            if (local is com.aichallenge.aiagentapp.agent.validation.ValidationResult.Fail) {
+                return@withContext Result.success(local)
+            }
+            if (relevantBlocks.isEmpty() && !includeTaskState) {
+                return@withContext Result.success(com.aichallenge.aiagentapp.agent.validation.ValidationResult.Pass(response))
+            }
+            val rulesText = com.aichallenge.aiagentapp.agent.invariant.InvariantBlocksFormatter
+                .formatForClassifier(relevantBlocks)
+            val onlyConstraints = com.aichallenge.aiagentapp.agent.invariant.StrictRulesExtractor
+                .formatStrictSummary(relevantBlocks)
+            val system = """
+                Проверь ответ ассистента на нарушение СТРОГИХ инвариантов и правил этапа задачи.
+                Верни ТОЛЬКО JSON:
+                {"pass": true/false, "violations": ["..."]}
+
+                ${com.aichallenge.aiagentapp.agent.invariant.StrictInvariantPolicy.validationRules}
+
+                Дополнительно для FSM задачи:
+                - pass=false на planning, если ответ «рад что помог» / завершение без результата
+                - pass=false если ответ завершает задачу без прохождения execution → validation → done
+            """.trimIndent()
+            val userPayload = buildString {
+                appendLine("=== Блоки инвариантов ===")
+                appendLine(rulesText.ifBlank { "(нет)" })
+                if (onlyConstraints.isNotBlank()) {
+                    appendLine()
+                    appendLine("=== Строгие ограничения (сводка) ===")
+                    appendLine(onlyConstraints)
+                }
+                appendLine()
+                appendLine("Этап задачи: ${if (includeTaskState) taskState.phase.name else "не применяется"}")
+                appendLine("Запрос пользователя:")
+                appendLine(userMessage)
+                appendLine("Ответ ассистента:")
+                appendLine(response.take(4000))
+            }
+            classifyJsonCall(system, userPayload, modelId) { raw, gson ->
+                val dto = gson.fromJson(stripMarkdownJson(raw), ValidateResponseDto::class.java) ?: return@classifyJsonCall null
+                if (dto.pass == true) {
+                    com.aichallenge.aiagentapp.agent.validation.ValidationResult.Pass(response)
+                } else {
+                    com.aichallenge.aiagentapp.agent.validation.ValidationResult.Fail(dto.violations ?: listOf("Нарушение инвариантов"))
+                }
+            }
+        }
+
+    private suspend fun <T> classifyJsonCall(
+        system: String,
+        userPayload: String,
+        modelId: String,
+        parse: (String, Gson) -> T?
+    ): Result<T> {
+        val request = DeepSeekRequest(
+            model = modelId,
+            messages = listOf(
+                ChatMessage(role = "system", content = system),
+                ChatMessage(role = "user", content = userPayload)
+            ),
+            stream = false,
+            maxTokens = 512,
+            temperature = 0.1
+        )
+        return try {
+            val response = routerAiApi.createChatCompletion(request)
+            if (response.isSuccessful) {
+                val raw = response.body()?.choices?.firstOrNull()?.message?.content?.trim()
+                    ?: return Result.failure(Exception("Empty classification response"))
+                val parsed = parse(raw, Gson())
+                if (parsed != null) Result.success(parsed)
+                else Result.failure(Exception("Failed to parse classification JSON"))
+            } else {
+                Result.failure(Exception(response.errorBody()?.string() ?: response.message()))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun stripMarkdownJson(raw: String): String {
+        var t = raw.trim()
+        if (t.startsWith("```")) {
+            t = t.removePrefix("```json").removePrefix("```JSON").removePrefix("```").trim()
+            val endFence = t.lastIndexOf("```")
+            if (endFence >= 0) t = t.substring(0, endFence).trim()
+        }
+        return t
+    }
+
+    private data class PromptContextDto(
+        val includeProfile: Boolean? = null,
+        val relevantBlockIds: List<String>? = null,
+        val includeTaskState: Boolean? = null,
+        val relevanceReason: String? = null
+    )
+
+    private data class InvariantConflictDto(
+        val hasConflict: Boolean? = null,
+        val violatedRuleTexts: List<String>? = null,
+        val conflictSummary: String? = null,
+        val suggestedAlternative: String? = null
+    )
+
+    private data class ValidateResponseDto(
+        val pass: Boolean? = null,
+        val violations: List<String>? = null
+    )
 }

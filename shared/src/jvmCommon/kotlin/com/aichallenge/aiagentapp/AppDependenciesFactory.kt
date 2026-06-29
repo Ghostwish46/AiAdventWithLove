@@ -3,6 +3,7 @@ package com.aichallenge.aiagentapp
 import com.aichallenge.aiagentapp.data.ConversationRepository
 import com.aichallenge.aiagentapp.data.DeepSeekRepository
 import com.aichallenge.aiagentapp.data.LongTermMemoryRepository
+import com.aichallenge.aiagentapp.data.InvariantsRepository
 import com.aichallenge.aiagentapp.data.ProfileCatalogRepository
 import com.aichallenge.aiagentapp.data.ModelInfo
 import com.aichallenge.aiagentapp.data.createRouterAiApi
@@ -16,6 +17,7 @@ fun createAppDependencies(
         conversationRepository = ConversationRepository(),
         longTermMemoryRepository = LongTermMemoryRepository(),
         profileCatalogRepository = ProfileCatalogRepository(),
+        invariantsRepository = InvariantsRepository(),
         deepSeekRepository = DeepSeekRepository(api),
         modelInfo = modelInfo,
         systemPrompt = systemPrompt
