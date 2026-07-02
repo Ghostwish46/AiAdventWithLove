@@ -49,6 +49,12 @@ data class InvariantConflictResult(
 
 interface LlmClient {
     suspend fun sendMessages(messages: List<ChatMessage>, modelId: String): Result<AgentTurnResult>
+    suspend fun sendMessagesWithTools(
+        messages: List<ToolChatMessage>,
+        tools: List<LlmToolDefinition>,
+        modelId: String,
+        toolChoice: String = "auto",
+    ): Result<LlmToolResponse>
     fun sendMessagesStreaming(messages: List<ChatMessage>, modelId: String): kotlinx.coroutines.flow.Flow<StreamEvent>
     suspend fun mergeStickyFacts(
         existingFacts: Map<String, String>,

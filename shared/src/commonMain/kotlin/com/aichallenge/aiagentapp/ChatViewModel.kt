@@ -21,6 +21,8 @@ import com.aichallenge.aiagentapp.data.encodeBranchingUiSnapshot
 import com.aichallenge.aiagentapp.data.encodeStickyFactsJson
 import com.aichallenge.aiagentapp.data.encodeTaskStatePayload
 import com.aichallenge.aiagentapp.data.encodeWorkingMemoryJson
+import com.aichallenge.aiagentapp.mcp.McpToolUsage
+import com.aichallenge.aiagentapp.mcp.displaySummary
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,7 +39,9 @@ data class UiMessage(
     val isError: Boolean = false,
     val usage: Usage? = null,
     val elapsedMs: Long = 0,
-    val estimatedCostRub: Double? = null
+    val estimatedCostRub: Double? = null,
+    val mcpToolsUsed: List<McpToolUsage> = emptyList(),
+    val mcpToolsAvailable: List<McpToolUsage> = emptyList(),
 )
 
 data class BranchOption(val id: String, val label: String)
@@ -60,7 +64,10 @@ data class ChatUiState(
     val activeInvariantBlocks: List<InvariantBlock> = emptyList(),
     val relevanceReason: String = "",
     val reworkStatus: String = "",
-    val blockedTransitionMessage: String? = null
+    val blockedTransitionMessage: String? = null,
+    val mcpToolsUsedLive: List<McpToolUsage> = emptyList(),
+    val mcpToolsAvailable: List<McpToolUsage> = emptyList(),
+    val mcpAvailabilityHint: String = "",
 )
 
 class ChatViewModel(
@@ -80,6 +87,9 @@ class ChatViewModel(
     init {
         initialBranching?.branchMessages?.forEach { (id, msgs) ->
             branchUiMessages[id] = msgs.toMutableList()
+        }
+        viewModelScope.launch {
+            refreshMcpAvailability()
         }
     }
 
@@ -197,7 +207,8 @@ class ChatViewModel(
         _uiState.value = _uiState.value.copy(
             input = "",
             messages = _uiState.value.messages + userMsg + loadingMsg,
-            isLoading = true
+            isLoading = true,
+            mcpToolsUsedLive = emptyList(),
         )
         viewModelScope.launch {
             executeSend(text, isRetry = false)
@@ -293,11 +304,33 @@ class ChatViewModel(
         val startMs = Clock.System.now().toEpochMilliseconds()
         var finalContent: String? = null
         var finalUsage: Usage? = null
+        val mcpToolsUsed = mutableListOf<McpToolUsage>()
+        val mcpToolsAvailable = agent.listMcpToolsForAgent()
+        _uiState.value = _uiState.value.copy(
+            mcpToolsAvailable = mcpToolsAvailable,
+            mcpAvailabilityHint = buildMcpAvailabilityHint(mcpToolsAvailable),
+        )
 
+        val useMcpTools = mcpToolsAvailable.isNotEmpty()
         runCatching {
-            collectStreamingResponse { content, usage ->
-                finalContent = content
-                finalUsage = usage
+            if (useMcpTools) {
+                collectToolStreamingResponse(
+                    onToolUsed = { call ->
+                        mcpToolsUsed.add(call)
+                        _uiState.value = _uiState.value.copy(
+                            mcpToolsUsedLive = mcpToolsUsed.toList(),
+                        )
+                    },
+                    onDone = { content, usage ->
+                        finalContent = content
+                        finalUsage = usage
+                    },
+                )
+            } else {
+                collectStreamingResponse { content, usage ->
+                    finalContent = content
+                    finalUsage = usage
+                }
             }
         }.onFailure { e ->
             clearStreamingContent()
@@ -313,7 +346,16 @@ class ChatViewModel(
             return
         }
 
-        var content = finalContent ?: ""
+        var content = finalContent?.trim().orEmpty()
+        if (content.isBlank()) {
+            content = if (useMcpTools) {
+                "Пустой ответ от модели после MCP-хода. Проверьте сервер и попробуйте снова."
+            } else if (mcpToolsAvailable.isEmpty()) {
+                "Пустой ответ от модели. MCP tools недоступны — откройте Настройки → MCP Tools и обновите сервер."
+            } else {
+                "Пустой ответ от модели. Попробуйте ещё раз."
+            }
+        }
         var usage = finalUsage
         var reworkAttempt = 0
 
@@ -356,7 +398,9 @@ class ChatViewModel(
                 usage = usage,
                 elapsedMs = elapsedMs,
                 estimatedCostRub = cost,
-                isLoading = false
+                isLoading = false,
+                mcpToolsUsed = mcpToolsUsed.toList(),
+                mcpToolsAvailable = mcpToolsAvailable,
             )
         )
         syncBranchCacheFromDisplay()
@@ -364,22 +408,61 @@ class ChatViewModel(
             _uiState.value = _uiState.value.copy(
                 memorySnapshot = agent.getMemorySnapshot(),
                 reworkStatus = "",
-                taskState = agent.getTaskState()
+                taskState = agent.getTaskState(),
+                mcpToolsUsedLive = emptyList(),
             )
         } else {
             _uiState.value = _uiState.value.copy(
                 reworkStatus = "",
                 taskState = agent.getTaskState(),
-                blockedTransitionMessage = null
+                blockedTransitionMessage = null,
+                mcpToolsUsedLive = emptyList(),
             )
         }
         persistConversation()
+    }
+
+    private suspend fun refreshMcpAvailability() {
+        val available = agent.listMcpToolsForAgent()
+        _uiState.value = _uiState.value.copy(
+            mcpToolsAvailable = available,
+            mcpAvailabilityHint = buildMcpAvailabilityHint(available),
+        )
+    }
+
+    private fun buildMcpAvailabilityHint(available: List<McpToolUsage>): String = when {
+        available.isEmpty() ->
+            "MCP: нет доступных tools — добавьте сервер в Настройки → MCP Tools и нажмите обновить"
+        else ->
+            "MCP готов: ${available.displaySummary()}"
     }
 
     private suspend fun collectStreamingResponse(onDone: (String, Usage?) -> Unit) {
         val accumulated = StringBuilder()
         var usage: Usage? = null
         agent.processQueryStreaming().collect { event ->
+            when (event) {
+                is StreamEvent.Chunk -> {
+                    accumulated.append(event.text)
+                    appendStreamingContent(event.text)
+                    yield()
+                }
+                is StreamEvent.Done -> {
+                    usage = event.usage
+                }
+                is StreamEvent.Error -> throw Exception(event.message)
+            }
+        }
+        onDone(accumulated.toString(), usage)
+    }
+
+    private suspend fun collectToolStreamingResponse(
+        onToolUsed: suspend (McpToolUsage) -> Unit,
+        onDone: (String, Usage?) -> Unit,
+    ) {
+        val accumulated = StringBuilder()
+        var usage: Usage? = null
+        agent.processTurnWithTools(onToolUsed = onToolUsed).collect { event ->
             when (event) {
                 is StreamEvent.Chunk -> {
                     accumulated.append(event.text)
@@ -464,7 +547,8 @@ class ChatViewModel(
                 completionTokens = m.usage?.completionTokens,
                 totalTokens = m.usage?.totalTokens,
                 elapsedMs = m.elapsedMs.takeIf { it > 0 },
-                estimatedCostRub = m.estimatedCostRub
+                estimatedCostRub = m.estimatedCostRub,
+                mcpToolsUsed = m.mcpToolsUsed,
             )
         }
         val strategy = agent.getContextStrategy()

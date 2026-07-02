@@ -27,6 +27,13 @@ fun main(args: Array<String>) = runBlocking {
             println("  - ${tool.name}: $description")
         }
         require(tools.isNotEmpty()) { "No tools returned" }
+
+        if (tools.any { it.name == "search_anime" }) {
+            val argsJson = """{"search":"Naruto","perPage":2}"""
+            val result = explorer.callTool("search_anime", argsJson)
+            println("search_anime result:")
+            println(result.text)
+        }
     } finally {
         explorer.close()
     }

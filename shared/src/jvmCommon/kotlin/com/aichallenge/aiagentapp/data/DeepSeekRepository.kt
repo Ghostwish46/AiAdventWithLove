@@ -32,7 +32,7 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
 
         val request = DeepSeekRequest(
             model = modelId,
-            messages = messages,
+            messages = messages.toApiChatMessages(),
             stream = false
         )
 
@@ -61,6 +61,65 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
                 } ?: "Error: ${response.code()} ${response.message()}"
                 Result.failure(Exception(errorMsg))
             }
+        } catch (e: IOException) {
+            Result.failure(Exception("Network error: ${e.message}"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun sendMessagesWithTools(
+        messages: List<ToolChatMessage>,
+        tools: List<LlmToolDefinition>,
+        modelId: String,
+        toolChoice: String,
+    ): Result<LlmToolResponse> = withContext(Dispatchers.IO) {
+        if (messages.isEmpty()) {
+            return@withContext Result.failure(IllegalArgumentException("No messages"))
+        }
+        if (tools.isEmpty() && toolChoice != "none") {
+            return@withContext Result.failure(IllegalArgumentException("No tools"))
+        }
+
+        val request = DeepSeekRequest(
+            model = modelId,
+            messages = messages.toApiToolChatMessages(),
+            stream = false,
+            tools = tools.takeIf { it.isNotEmpty() }?.toApiToolDefinitions(),
+            toolChoice = toolChoice,
+        )
+
+        val startMs = System.currentTimeMillis()
+        try {
+            val response = routerAiApi.createChatCompletion(request)
+            val elapsedMs = System.currentTimeMillis() - startMs
+            if (!response.isSuccessful) {
+                val errorMsg = response.errorBody()?.string()?.let { raw ->
+                    try {
+                        Gson().fromJson(raw, ErrorBody::class.java)?.error?.message ?: raw
+                    } catch (_: Exception) {
+                        raw
+                    }
+                } ?: "Error: ${response.code()} ${response.message()}"
+                return@withContext Result.failure(Exception(errorMsg))
+            }
+
+            val body = response.body()
+            val choice = body?.choices?.firstOrNull()
+            val message = choice?.message
+                ?: return@withContext Result.failure(Exception("Empty response from API"))
+
+            val (content, toolCalls) = message.toLlmToolResponseMessage()
+            val usage = body.usage?.toUsage()?.takeIf { it.isMeaningful() }
+            Result.success(
+                LlmToolResponse(
+                    content = content,
+                    toolCalls = toolCalls,
+                    usage = usage,
+                    elapsedMs = elapsedMs,
+                    finishReason = choice.finishReason,
+                )
+            )
         } catch (e: IOException) {
             Result.failure(Exception("Network error: ${e.message}"))
         } catch (e: Exception) {
@@ -99,7 +158,7 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
             messages = listOf(
                 ChatMessage(role = "system", content = system),
                 ChatMessage(role = "user", content = userPayload)
-            ),
+            ).toApiChatMessages(),
             stream = false,
             maxTokens = 512,
             temperature = 0.2
@@ -163,7 +222,7 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
             messages = listOf(
                 ChatMessage(role = "system", content = system),
                 ChatMessage(role = "user", content = userPayload)
-            ),
+            ).toApiChatMessages(),
             stream = false,
             maxTokens = 768,
             temperature = 0.2
@@ -290,7 +349,7 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
             messages = listOf(
                 ChatMessage(role = "system", content = system),
                 ChatMessage(role = "user", content = userPayload)
-            ),
+            ).toApiChatMessages(),
             stream = false,
             maxTokens = 768,
             temperature = 0.2
@@ -409,7 +468,7 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
         if (messages.isEmpty()) return@flow
         val request = DeepSeekRequest(
             model = modelId,
-            messages = messages,
+            messages = messages.toApiChatMessages(),
             stream = true,
             streamOptions = StreamOptions(includeUsage = true)
         )
@@ -655,7 +714,7 @@ class DeepSeekRepository(private val routerAiApi: DeepSeekApi) : LlmClient {
             messages = listOf(
                 ChatMessage(role = "system", content = system),
                 ChatMessage(role = "user", content = userPayload)
-            ),
+            ).toApiChatMessages(),
             stream = false,
             maxTokens = 512,
             temperature = 0.1

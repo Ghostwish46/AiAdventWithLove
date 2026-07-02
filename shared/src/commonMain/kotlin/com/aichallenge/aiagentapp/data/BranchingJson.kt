@@ -111,7 +111,8 @@ private fun UiMessage.toSavedMessage(): SavedMessage = SavedMessage(
     completionTokens = usage?.completionTokens,
     totalTokens = usage?.totalTokens,
     elapsedMs = elapsedMs.takeIf { it > 0 },
-    estimatedCostRub = estimatedCostRub
+    estimatedCostRub = estimatedCostRub,
+    mcpToolsUsed = mcpToolsUsed,
 )
 
 private fun SavedMessage.toUiMessage(): UiMessage = UiMessage(
@@ -119,5 +120,6 @@ private fun SavedMessage.toUiMessage(): UiMessage = UiMessage(
     content = content,
     usage = toUsage(),
     elapsedMs = elapsedMs ?: 0,
-    estimatedCostRub = estimatedCostRub
+    estimatedCostRub = estimatedCostRub,
+    mcpToolsUsed = mcpToolsUsed,
 )

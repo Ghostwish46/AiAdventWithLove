@@ -1,5 +1,6 @@
 package com.aichallenge.aiagentapp.data
 
+import com.aichallenge.aiagentapp.mcp.McpToolUsage
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -10,7 +11,8 @@ data class SavedMessage(
     val completionTokens: Int? = null,
     val totalTokens: Int? = null,
     val elapsedMs: Long? = null,
-    val estimatedCostRub: Double? = null
+    val estimatedCostRub: Double? = null,
+    val mcpToolsUsed: List<McpToolUsage> = emptyList(),
 ) {
     fun toChatMessage(): ChatMessage = ChatMessage(role = role, content = content)
 

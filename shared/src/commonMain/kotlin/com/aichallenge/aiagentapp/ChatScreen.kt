@@ -37,7 +37,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -50,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.Dp
@@ -58,6 +61,8 @@ import androidx.navigation.NavController
 import com.aichallenge.aiagentapp.agent.ContextStrategy
 import com.aichallenge.aiagentapp.agent.SimpleAgent
 import com.aichallenge.aiagentapp.agent.memory.MemorySnapshot
+import com.aichallenge.aiagentapp.mcp.McpToolUsage
+import com.aichallenge.aiagentapp.mcp.displaySummary
 import com.aichallenge.aiagentapp.agent.profile.AssistantProfile
 import com.aichallenge.aiagentapp.agent.invariant.InvariantBlock
 import com.aichallenge.aiagentapp.agent.task.TaskPhase
@@ -193,6 +198,12 @@ fun ChatScreen(
                 state.messages.lastOrNull { it.usage != null }?.usage?.promptTokens ?: 0
             val totalTokensInDialog = state.messages.sumOf { it.usage?.totalTokens ?: 0 }
             val totalCostInDialog = state.messages.sumOf { it.estimatedCostRub ?: 0.0 }
+            val mcpToolCallsForSummary = when {
+                state.isLoading && state.mcpToolsUsedLive.isNotEmpty() -> state.mcpToolsUsedLive
+                else -> state.messages.asReversed().firstOrNull {
+                    it.role == "assistant" && !it.isLoading && !it.isError && it.mcpToolsUsed.isNotEmpty()
+                }?.mcpToolsUsed.orEmpty()
+            }
             val contextLength = viewModel.contextLength
             val showSummary = state.messages.isNotEmpty()
 
@@ -279,7 +290,9 @@ fun ChatScreen(
                         InvariantsPanel(
                             blocks = state.activeInvariantBlocks,
                             relevanceReason = state.relevanceReason,
-                            reworkStatus = state.reworkStatus
+                            reworkStatus = state.reworkStatus,
+                            mcpToolsUsedLive = state.mcpToolsUsedLive,
+                            mcpAvailabilityHint = state.mcpAvailabilityHint,
                         )
                         DialogSummary(
                             lastRequestContextTokens = lastRequestContextTokens,
@@ -292,7 +305,10 @@ fun ChatScreen(
                             stickyFactsSummary = state.stickyFactsSummary,
                             isBranched = state.isBranched,
                             memorySnapshot = state.memorySnapshot,
-                            lastRoutingLog = state.lastRoutingLog
+                            lastRoutingLog = state.lastRoutingLog,
+                            mcpToolCalls = mcpToolCallsForSummary,
+                            mcpToolsAvailable = state.mcpToolsAvailable,
+                            isLoading = state.isLoading,
                         )
                     }
                 }
@@ -434,6 +450,19 @@ private fun MessageBubbleContent(
                         modifier = Modifier.fillMaxWidth(),
                         color = textColor
                     )
+                    if (message.mcpToolsUsed.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        McpToolsUsedRow(
+                            tools = message.mcpToolsUsed,
+                            textColor = textColor,
+                        )
+                    } else if (message.mcpToolsAvailable.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        McpToolsUnusedHint(
+                            tools = message.mcpToolsAvailable,
+                            textColor = textColor,
+                        )
+                    }
                 } else {
                     Text(
                         text = message.content,
@@ -472,6 +501,48 @@ private fun MessageBubbleContent(
                             tint = textColor
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun McpToolsUnusedHint(
+    tools: List<McpToolUsage>,
+    textColor: Color,
+) {
+    Text(
+        text = "MCP доступен, но не вызван: ${tools.displaySummary()}",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.tertiary,
+    )
+}
+
+@Composable
+private fun McpToolsUsedRow(
+    tools: List<McpToolUsage>,
+    textColor: Color,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = "MCP tools",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = textColor.copy(alpha = 0.85f),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            tools.distinctBy { it.serverName to it.toolName }.forEach { usage ->
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                ) {
+                    Text(
+                        text = usage.displayLabel(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
                 }
             }
         }
@@ -521,7 +592,10 @@ private fun DialogSummary(
     stickyFactsSummary: String,
     isBranched: Boolean,
     memorySnapshot: MemorySnapshot? = null,
-    lastRoutingLog: List<String> = emptyList()
+    lastRoutingLog: List<String> = emptyList(),
+    mcpToolCalls: List<McpToolUsage> = emptyList(),
+    mcpToolsAvailable: List<McpToolUsage> = emptyList(),
+    isLoading: Boolean = false,
 ) {
     val nearLimit = contextLength != null && contextLength > 0 &&
         lastRequestContextTokens >= contextLength * 0.9
@@ -625,6 +699,11 @@ private fun DialogSummary(
             text = "Стоимость диалога: ~${"%.4f".format(totalCostInDialog)} ₽",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface
+        )
+        McpToolCallsSummarySection(
+            calls = mcpToolCalls,
+            availableTools = mcpToolsAvailable,
+            isLoading = isLoading,
         )
         if (contextLength != null) {
             Text(
@@ -770,7 +849,9 @@ private fun TaskStatePanel(taskState: TaskState, blockedMessage: String? = null)
 private fun InvariantsPanel(
     blocks: List<InvariantBlock>,
     relevanceReason: String,
-    reworkStatus: String
+    reworkStatus: String,
+    mcpToolsUsedLive: List<McpToolUsage> = emptyList(),
+    mcpAvailabilityHint: String = "",
 ) {
     Column(
         modifier = Modifier
@@ -828,6 +909,21 @@ private fun InvariantsPanel(
                 fontWeight = FontWeight.Medium
             )
         }
+        if (mcpAvailabilityHint.isNotBlank()) {
+            Text(
+                text = mcpAvailabilityHint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (mcpToolsUsedLive.isNotEmpty()) {
+            Text(
+                text = "MCP: ${mcpToolsUsedLive.displaySummary()}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium
+            )
+        }
     }
 }
 
@@ -867,6 +963,109 @@ private fun TaskPhaseChip(
             color = textColor,
             maxLines = 2
         )
+    }
+}
+
+@Composable
+private fun McpToolCallsSummarySection(
+    calls: List<McpToolUsage>,
+    availableTools: List<McpToolUsage>,
+    isLoading: Boolean,
+) {
+    Spacer(modifier = Modifier.height(6.dp))
+    Text(
+        text = "MCP tools (последний запрос)",
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    when {
+        calls.isNotEmpty() -> {
+            if (isLoading) {
+                Text(
+                    text = "Вызовы обновляются…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            calls.forEachIndexed { index, call ->
+                McpToolCallDetailCard(call = call, index = index + 1)
+            }
+        }
+        availableTools.isNotEmpty() -> {
+            Text(
+                text = "Доступны: ${availableTools.displaySummary()}, но в последнем ответе не вызывались.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+        }
+        else -> {
+            Text(
+                text = "Нет подключённых MCP tools.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun McpToolCallDetailCard(
+    call: McpToolUsage,
+    index: Int,
+) {
+    var expanded by remember(call) { mutableStateOf(true) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "$index. ${call.displayLabel()}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(
+                    text = if (expanded) "Свернуть" else "Развернуть",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+        if (expanded) {
+            Text(
+                text = "Запрос (arguments):",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = call.previewArguments(),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "Ответ tool:",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = call.previewResult(),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
     }
 }
 

@@ -1,5 +1,8 @@
 package com.aichallenge.aiagentapp.data
 
+import kotlinx.serialization.Serializable
+
+@Serializable
 enum class McpConnectionMode {
     HTTP,
     STDIO,

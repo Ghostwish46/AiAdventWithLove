@@ -21,15 +21,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
 import com.aichallenge.aiagentapp.ui.platformSafeAreaModifier
+
+private fun NavController.navigateBackFromSettings() {
+    if (!popBackStack()) {
+        navigate("home") {
+            launchSingleTop = true
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsHubScreen(
+    navController: NavController,
     onProfilesClick: () -> Unit,
     onInvariantsClick: () -> Unit,
     onMcpClick: () -> Unit,
-    onBack: () -> Unit
 ) {
     Scaffold(
         modifier = Modifier.then(platformSafeAreaModifier()),
@@ -37,7 +46,7 @@ fun SettingsHubScreen(
             TopAppBar(
                 title = { Text("Настройки") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { navController.navigateBackFromSettings() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
                     }
                 }
@@ -61,8 +70,8 @@ fun SettingsHubScreen(
                 onClick = onInvariantsClick
             )
             SettingsHubItem(
-                title = "MCP",
-                subtitle = "Подключение к MCP-серверу и список доступных инструментов",
+                title = "MCP Tools",
+                subtitle = "Серверы, инструменты, вкл/выкл для агента",
                 onClick = onMcpClick
             )
         }

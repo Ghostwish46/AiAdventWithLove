@@ -83,10 +83,10 @@ fun App(deps: AppDependencies) {
                     }
                     composable("settings") {
                         SettingsHubScreen(
+                            navController = navController,
                             onProfilesClick = { navController.navigate("settings/profiles") },
                             onInvariantsClick = { navController.navigate("settings/invariants") },
                             onMcpClick = { navController.navigate("settings/mcp") },
-                            onBack = { navController.popBackStack() }
                         )
                     }
                     composable("settings/profiles") {
@@ -105,14 +105,11 @@ fun App(deps: AppDependencies) {
                         )
                     }
                     composable("settings/mcp") {
-                        val mcpSettingsViewModel: McpSettingsViewModel = viewModel {
-                            McpSettingsViewModel(
-                                settingsStore = deps.mcpSettingsStore,
-                                connectionTester = deps.mcpConnectionTester,
-                            )
+                        val mcpToolsViewModel: McpToolsViewModel = viewModel {
+                            McpToolsViewModel(registry = deps.mcpRegistry)
                         }
-                        McpSettingsScreen(
-                            viewModel = mcpSettingsViewModel,
+                        McpToolsScreen(
+                            viewModel = mcpToolsViewModel,
                             navController = navController,
                         )
                     }
@@ -193,7 +190,8 @@ fun App(deps: AppDependencies) {
                                     null
                                 },
                                 assistantProfile = assistantProfile,
-                                invariantsCatalog = invariantsCatalog
+                                invariantsCatalog = invariantsCatalog,
+                                mcpToolExecutor = deps.mcpToolExecutor,
                             )
                             ChatViewModel(
                                 agent = agent,
@@ -268,7 +266,8 @@ fun App(deps: AppDependencies) {
                                 assistantProfile = assistantProfile,
                                 initialTaskState = taskPayload.state,
                                 initialTaskFsmScope = taskPayload.fsmScope,
-                                invariantsCatalog = invariantsCatalog
+                                invariantsCatalog = invariantsCatalog,
+                                mcpToolExecutor = deps.mcpToolExecutor,
                             )
                             val initialMessages = if (initialBranching != null) {
                                 emptyList()
@@ -279,7 +278,8 @@ fun App(deps: AppDependencies) {
                                         content = sm.content,
                                         usage = sm.toUsage(),
                                         elapsedMs = sm.elapsedMs ?: 0,
-                                        estimatedCostRub = sm.estimatedCostRub
+                                        estimatedCostRub = sm.estimatedCostRub,
+                                        mcpToolsUsed = sm.mcpToolsUsed,
                                     )
                                 }
                             }

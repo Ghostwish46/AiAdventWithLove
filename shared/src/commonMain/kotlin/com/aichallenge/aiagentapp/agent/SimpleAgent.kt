@@ -25,7 +25,16 @@ import com.aichallenge.aiagentapp.data.LlmClient
 import com.aichallenge.aiagentapp.data.LongTermMemoryStore
 import com.aichallenge.aiagentapp.data.ModelInfo
 import com.aichallenge.aiagentapp.data.StreamEvent
+import com.aichallenge.aiagentapp.data.ToolChatMessage
+import com.aichallenge.aiagentapp.data.Usage
+import com.aichallenge.aiagentapp.data.toLlmToolDefinition
+import com.aichallenge.aiagentapp.data.toAssistantToolMessage
+import com.aichallenge.aiagentapp.data.toToolChatMessage
+import com.aichallenge.aiagentapp.mcp.McpToolExecutor
+import com.aichallenge.aiagentapp.mcp.McpToolInfo
+import com.aichallenge.aiagentapp.mcp.McpToolUsage
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
 class SimpleAgent(
     private val repository: LlmClient,
@@ -40,11 +49,13 @@ class SimpleAgent(
     private val assistantProfile: AssistantProfile = AssistantProfile.NEUTRAL,
     initialTaskState: TaskState = TaskState.inactive(),
     initialTaskFsmScope: TaskFsmScope = TaskFsmScope.UNDECIDED,
-    private val invariantsCatalog: InvariantsCatalog = InvariantsCatalog()
+    private val invariantsCatalog: InvariantsCatalog = InvariantsCatalog(),
+    private val mcpToolExecutor: McpToolExecutor? = null,
 ) {
     companion object {
         const val KEEP_LAST_MESSAGES = 8
         const val MAX_REWORK_ATTEMPTS = 2
+        const val MAX_TOOL_ITERATIONS = 5
     }
 
     private val contextStrategyInternal = initialContextStrategy
@@ -453,6 +464,115 @@ class SimpleAgent(
 
     fun processQueryStreaming(): Flow<StreamEvent> =
         repository.sendMessagesStreaming(buildMessagesForApi(), modelInfo.id)
+
+    suspend fun canUseMcpTools(): Boolean {
+        val executor = mcpToolExecutor ?: return false
+        return executor.listAvailableTools().getOrNull()?.isNotEmpty() == true
+    }
+
+    suspend fun listMcpToolsForAgent(): List<McpToolUsage> {
+        val executor = mcpToolExecutor ?: return emptyList()
+        return executor.listAgentToolUsages().getOrNull().orEmpty()
+    }
+
+    fun processTurnWithTools(onToolUsed: suspend (McpToolUsage) -> Unit = {}): Flow<StreamEvent> = flow {
+        val executor = mcpToolExecutor
+        if (executor == null) {
+            processQueryStreaming().collect { emit(it) }
+            return@flow
+        }
+
+        val tools = executor.listAvailableTools().getOrNull().orEmpty()
+        if (tools.isEmpty()) {
+            processQueryStreaming().collect { emit(it) }
+            return@flow
+        }
+
+        val llmTools = tools.map { it.toLlmToolDefinition() }
+        val apiMessages = buildToolChatMessagesForApi(tools)
+        var totalUsage: Usage? = null
+        var finalContent: String? = null
+
+        for (iteration in 0 until MAX_TOOL_ITERATIONS) {
+            val response = repository.sendMessagesWithTools(apiMessages, llmTools, modelInfo.id)
+                .getOrElse { error ->
+                    emit(StreamEvent.Error(error.message ?: "Tool call failed"))
+                    return@flow
+                }
+            totalUsage = response.usage ?: totalUsage
+
+            if (response.toolCalls.isEmpty()) {
+                finalContent = response.content.orEmpty()
+                break
+            }
+
+            apiMessages.add(response.toAssistantToolMessage())
+            for (call in response.toolCalls) {
+                val usage = executor.resolveToolUsage(call.name)
+                val toolResult = executor.callTool(call.name, call.argumentsJson)
+                    .getOrElse { error ->
+                        emit(StreamEvent.Error(error.message ?: "MCP tool failed"))
+                        return@flow
+                    }
+                onToolUsed(
+                    McpToolUsage(
+                        serverName = usage.serverName,
+                        toolName = usage.toolName,
+                        argumentsJson = call.argumentsJson,
+                        resultText = toolResult.text,
+                    )
+                )
+                apiMessages.add(
+                    ToolChatMessage.tool(
+                        toolCallId = call.id,
+                        name = call.name,
+                        content = toolResult.text,
+                    )
+                )
+            }
+        }
+
+        if (finalContent.isNullOrBlank()) {
+            val synthesis = repository.sendMessagesWithTools(
+                messages = apiMessages,
+                tools = llmTools,
+                modelId = modelInfo.id,
+                toolChoice = "none",
+            ).getOrElse { error ->
+                emit(StreamEvent.Error(error.message ?: "Tool call failed"))
+                return@flow
+            }
+            totalUsage = synthesis.usage ?: totalUsage
+            finalContent = synthesis.content.orEmpty()
+        }
+
+        val content = finalContent
+        if (content.isNullOrBlank()) {
+            emit(StreamEvent.Error("Пустой ответ после вызова MCP tools"))
+            return@flow
+        }
+
+        emit(StreamEvent.Chunk(content))
+        emit(StreamEvent.Done(totalUsage))
+    }
+
+    private fun buildToolChatMessagesForApi(tools: List<McpToolInfo>): MutableList<ToolChatMessage> {
+        val messages = buildMessagesForApi().map { it.toToolChatMessage() }.toMutableList()
+        val systemIndex = messages.indexOfFirst { it.role == "system" }
+        if (systemIndex >= 0) {
+            val existing = messages[systemIndex].content.orEmpty()
+            val toolNames = tools.joinToString(", ") { it.name }
+            messages[systemIndex] = messages[systemIndex].copy(
+                content = existing +
+                    "\n\nУ тебя ЕСТЬ доступ к MCP-инструментам: $toolNames. " +
+                    "Никогда не говори, что у тебя нет доступа к MCP или внешним данным — инструменты подключены. " +
+                    "Если пользователь просит найти аниме, товары или другие внешние данные — ОБЯЗАТЕЛЬНО вызови подходящий tool. " +
+                    "Для search_anime (AniList) передавай параметр search на английском. " +
+                    "Старайся уложиться в 1–2 вызова tool, затем ответь пользователю текстом.",
+            )
+        }
+        return messages
+    }
 
     fun buildMessagesForApi(): List<ChatMessage> = buildList {
         val ctx = turnContext.promptContext
